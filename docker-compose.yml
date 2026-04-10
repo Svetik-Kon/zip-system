@@ -1,0 +1,104 @@
+version: "3.9"
+
+services:
+  frontend:
+    build: ./frontend/web
+    container_name: zip-frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend/web:/app
+      - /app/node_modules
+    depends_on:
+      - gateway
+
+  gateway:
+    build: ./backend/gateway
+    container_name: zip-gateway
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/gateway:/app
+    env_file:
+      - .env
+    depends_on:
+      - auth-service
+      - requests-service
+      - inventory-service
+
+  auth-service:
+    build: ./backend/auth-service
+    container_name: zip-auth-service
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./backend/auth-service:/app
+    env_file:
+      - .env
+    depends_on:
+      - auth-db
+
+  requests-service:
+    build: ./backend/requests-service
+    container_name: zip-requests-service
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./backend/requests-service:/app
+    env_file:
+      - .env
+    depends_on:
+      - requests-db
+
+  inventory-service:
+    build: ./backend/inventory-service
+    container_name: zip-inventory-service
+    ports:
+      - "8003:8003"
+    volumes:
+      - ./backend/inventory-service:/app
+    env_file:
+      - .env
+    depends_on:
+      - inventory-db
+
+  auth-db:
+    image: postgres:16
+    container_name: zip-auth-db
+    environment:
+      POSTGRES_DB: ${AUTH_DB_NAME}
+      POSTGRES_USER: ${AUTH_DB_USER}
+      POSTGRES_PASSWORD: ${AUTH_DB_PASSWORD}
+    ports:
+      - "5433:5432"
+    volumes:
+      - auth_postgres_data:/var/lib/postgresql/data
+
+  requests-db:
+    image: postgres:16
+    container_name: zip-requests-db
+    environment:
+      POSTGRES_DB: ${REQUESTS_DB_NAME}
+      POSTGRES_USER: ${REQUESTS_DB_USER}
+      POSTGRES_PASSWORD: ${REQUESTS_DB_PASSWORD}
+    ports:
+      - "5434:5432"
+    volumes:
+      - requests_postgres_data:/var/lib/postgresql/data
+
+  inventory-db:
+    image: postgres:16
+    container_name: zip-inventory-db
+    environment:
+      POSTGRES_DB: ${INVENTORY_DB_NAME}
+      POSTGRES_USER: ${INVENTORY_DB_USER}
+      POSTGRES_PASSWORD: ${INVENTORY_DB_PASSWORD}
+    ports:
+      - "5435:5432"
+    volumes:
+      - inventory_postgres_data:/var/lib/postgresql/data
+
+volumes:
+  auth_postgres_data:
+  requests_postgres_data:
+  inventory_postgres_data:
