@@ -3,10 +3,10 @@ import uuid
 
 
 class RequestType(models.TextChoices):
-    CUSTOMER_REQUEST = "customer_request", "Заявка заказчика"
-    INTERNAL_LAB_LOAN = "internal_lab_loan", "Временная выдача в лабораторию"
-    INTERNAL_EQUIPMENT_REQUEST = "internal_equipment_request", "Внутренний запрос оборудования"
-    REPAIR_REQUEST = "repair_request", "Ремонт / диагностика"
+    REPAIR_DIAGNOSTICS = "repair_diagnostics", "Ремонт / диагностика"
+    EQUIPMENT_REPLACEMENT = "equipment_replacement", "Замена оборудования"
+    INTERNAL_REQUEST = "internal_request", "Внутренний запрос"
+    SOFTWARE_UPDATE = "software_update", "Обновление / запрос софта"
 
 
 class RequestPriority(models.TextChoices):
@@ -17,10 +17,8 @@ class RequestPriority(models.TextChoices):
 
 
 class RequestStatus(models.TextChoices):
-    DRAFT = "draft", "Черновик"
     NEW = "new", "Новая"
     IN_REVIEW = "in_review", "На проверке"
-    AWAITING_CONTRACT_CHECK = "awaiting_contract_check", "Проверка контракта"
     DIAGNOSTICS = "diagnostics", "Диагностика"
     AWAITING_WAREHOUSE = "awaiting_warehouse", "Ожидает склад"
     AWAITING_PROCUREMENT = "awaiting_procurement", "Ожидает закупки"
@@ -42,55 +40,52 @@ class ServiceRequest(models.Model):
     description = models.TextField("Описание", blank=True)
 
     request_type = models.CharField(
-        "Тип заявки",
         max_length=50,
         choices=RequestType.choices,
-        default=RequestType.CUSTOMER_REQUEST,
+        default=RequestType.REPAIR_DIAGNOSTICS,
     )
     priority = models.CharField(
-        "Приоритет",
         max_length=20,
         choices=RequestPriority.choices,
         default=RequestPriority.MEDIUM,
     )
     status = models.CharField(
-        "Статус",
         max_length=50,
         choices=RequestStatus.choices,
         default=RequestStatus.NEW,
     )
 
-    is_internal = models.BooleanField("Внутренняя заявка", default=False)
-    contract_exists = models.BooleanField("Контракт подтвержден", default=False)
-    recall_allowed = models.BooleanField("Можно отозвать под внешний приоритет", default=False)
+    is_internal = models.BooleanField(default=False)
+    contract_exists = models.BooleanField(default=False)
+    recall_allowed = models.BooleanField(default=False)
 
     customer_organization_id = models.UUIDField(null=True, blank=True)
     integrator_organization_id = models.UUIDField(null=True, blank=True)
 
     created_by_id = models.UUIDField()
+    created_by_username = models.CharField(max_length=150, blank=True)
+
     current_assignee_id = models.UUIDField(null=True, blank=True)
     requested_for_user_id = models.UUIDField(null=True, blank=True)
 
-    equipment_name = models.CharField("Оборудование", max_length=255, blank=True)
-    equipment_model = models.CharField("Модель", max_length=255, blank=True)
-    serial_number = models.CharField("Серийный номер", max_length=255, blank=True)
-    inventory_number = models.CharField("Инвентарный номер", max_length=255, blank=True)
+    equipment_name = models.CharField(max_length=255, blank=True)
+    equipment_model = models.CharField(max_length=255, blank=True)
+    serial_number = models.CharField(max_length=255, blank=True)
+    inventory_number = models.CharField(max_length=255, blank=True)
 
-    site_name = models.CharField("Площадка / объект", max_length=255, blank=True)
-    address = models.CharField("Адрес", max_length=500, blank=True)
-    desired_date = models.DateField("Желаемая дата", null=True, blank=True)
-    due_date = models.DateField("Срок возврата / завершения", null=True, blank=True)
+    site_name = models.CharField(max_length=255, blank=True)
+    address = models.CharField(max_length=500, blank=True)
+    desired_date = models.DateField(null=True, blank=True)
+    due_date = models.DateField(null=True, blank=True)
 
-    created_at = models.DateTimeField("Создана", auto_now_add=True)
-    updated_at = models.DateTimeField("Обновлена", auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        verbose_name = "Заявка"
-        verbose_name_plural = "Заявки"
         ordering = ["-created_at"]
 
     def __str__(self):
-        return f"{self.number or self.id} - {self.title}"
+        return f"{self.number} - {self.title}"
 
     def save(self, *args, **kwargs):
         if not self.number:
@@ -112,16 +107,10 @@ class ServiceRequestItem(models.Model):
         on_delete=models.CASCADE,
         related_name="items",
     )
-
-    catalog_item_id = models.UUIDField(null=True, blank=True)
-    item_name = models.CharField("Наименование", max_length=255)
-    quantity = models.PositiveIntegerField("Количество", default=1)
-    allow_analog = models.BooleanField("Разрешена замена", default=False)
-    comment = models.TextField("Комментарий", blank=True)
-
-    class Meta:
-        verbose_name = "Позиция заявки"
-        verbose_name_plural = "Позиции заявок"
+    item_name = models.CharField(max_length=255)
+    quantity = models.PositiveIntegerField(default=1)
+    allow_analog = models.BooleanField(default=False)
+    comment = models.TextField(blank=True)
 
     def __str__(self):
         return f"{self.item_name} x {self.quantity}"
@@ -136,19 +125,18 @@ class RequestComment(models.Model):
     )
 
     author_id = models.UUIDField()
+    author_username = models.CharField(max_length=150, blank=True)
     author_role = models.CharField(max_length=50)
-    body = models.TextField("Текст комментария")
-    is_internal = models.BooleanField("Внутренний комментарий", default=False)
+    body = models.TextField()
+    is_internal = models.BooleanField(default=False)
 
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        verbose_name = "Комментарий"
-        verbose_name_plural = "Комментарии"
         ordering = ["created_at"]
 
     def __str__(self):
-        return f"Комментарий {self.author_role} - {self.created_at}"
+        return f"{self.author_username}: {self.body[:30]}"
 
 
 class RequestEvent(models.Model):
@@ -160,7 +148,9 @@ class RequestEvent(models.Model):
     )
 
     actor_id = models.UUIDField()
+    actor_username = models.CharField(max_length=150, blank=True)
     actor_role = models.CharField(max_length=50)
+
     event_type = models.CharField(max_length=100)
     old_value = models.CharField(max_length=255, blank=True)
     new_value = models.CharField(max_length=255, blank=True)
@@ -169,8 +159,6 @@ class RequestEvent(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        verbose_name = "Событие заявки"
-        verbose_name_plural = "События заявки"
         ordering = ["created_at"]
 
     def __str__(self):
