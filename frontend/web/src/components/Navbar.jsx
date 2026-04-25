@@ -13,8 +13,10 @@ export default function Navbar() {
   return (
     <div className="navbar">
       <div className="navbar-left">
-        <Link to="/requests">Заявки</Link>
+        <Link to="/requests">Все заявки</Link>
+        <Link to="/requests?assigned_to_me=true">Назначенные мне</Link>
         <Link to="/requests/create">Создать заявку</Link>
+        {me?.role === "admin" ? <Link to="/admin/users">Пользователи</Link> : null}
       </div>
 
       <div className="navbar-right">

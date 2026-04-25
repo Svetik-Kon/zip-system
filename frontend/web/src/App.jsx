@@ -5,6 +5,7 @@ import CreateRequestPage from "./pages/CreateRequestPage";
 import RequestDetailsPage from "./pages/RequestDetailsPage";
 import ProtectedRoute from "./components/ProtectedRoute";
 import { isAuthenticated } from "./utils/auth";
+import AdminUsersPage from "./pages/AdminUsersPage";
 
 function HomeRedirect() {
   return isAuthenticated() ? <Navigate to="/requests" replace /> : <Navigate to="/login" replace />;
@@ -43,6 +44,8 @@ export default function App() {
             </ProtectedRoute>
           }
         />
+
+        <Route path="/admin/users" element={<ProtectedRoute><AdminUsersPage /></ProtectedRoute>} />
       </Routes>
     </BrowserRouter>
   );
