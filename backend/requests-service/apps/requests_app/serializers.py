@@ -65,6 +65,7 @@ class ServiceRequestListSerializer(serializers.ModelSerializer):
             "created_by_username",
             "site_name",
             "created_at",
+            "current_assignee_username",
         )
 
 
@@ -105,6 +106,7 @@ class ServiceRequestDetailSerializer(serializers.ModelSerializer):
             "events",
             "created_at",
             "updated_at",
+            "current_assignee_username",
         )
 
     def get_comments(self, obj):
@@ -191,3 +193,14 @@ class ServiceRequestCreateSerializer(serializers.ModelSerializer):
         )
 
         return sr
+    
+
+class AssignRequestSerializer(serializers.Serializer):
+    assignee_id = serializers.UUIDField(required=True)
+    assignee_username = serializers.CharField(required=False, allow_blank=True)
+    comment = serializers.CharField(required=False, allow_blank=True)
+
+
+class ChangeStatusSerializer(serializers.Serializer):
+    status = serializers.ChoiceField(choices=ServiceRequest._meta.get_field("status").choices)
+    comment = serializers.CharField(required=False, allow_blank=True)

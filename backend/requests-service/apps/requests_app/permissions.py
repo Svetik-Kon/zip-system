@@ -17,3 +17,13 @@ class CanViewRequest(BasePermission):
             return str(obj.created_by_id) == str(user.id)
 
         return True
+
+
+class IsInternalStaffUser(BasePermission):
+    def has_permission(self, request, view):
+        user = request.user
+        return bool(
+            user
+            and getattr(user, "is_authenticated", False)
+            and getattr(user, "role", None) != "customer"
+        )

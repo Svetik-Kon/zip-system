@@ -1,16 +1,27 @@
 from django.http import JsonResponse
-from rest_framework import generics, permissions
+from django.shortcuts import get_object_or_404
+from rest_framework import generics
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import ServiceRequest, RequestComment, RequestEvent
+
+
 from .serializers import (
     ServiceRequestListSerializer,
     ServiceRequestDetailSerializer,
     ServiceRequestCreateSerializer,
     RequestCommentSerializer,
+    AssignRequestSerializer,
+    ChangeStatusSerializer,
 )
-from .permissions import IsAuthenticatedServiceUser, CanViewRequest
+
+
+from .permissions import (
+    IsAuthenticatedServiceUser,
+    CanViewRequest,
+    IsInternalStaffUser,
+)
 
 
 def health_check(request):
@@ -26,6 +37,11 @@ class ServiceRequestListCreateView(generics.ListCreateAPIView):
 
         if user.role == "customer":
             qs = qs.filter(created_by_id=user.id)
+        else:
+            assigned_to_me = self.request.query_params.get("assigned_to_me")
+
+            if assigned_to_me == "true":
+                qs = qs.filter(current_assignee_id=user.id)
 
         return qs
 
@@ -88,3 +104,76 @@ class RequestCommentCreateView(APIView):
         )
 
         return Response(RequestCommentSerializer(comment).data, status=201)
+    
+
+class RequestAssignView(APIView):
+    permission_classes = [IsAuthenticatedServiceUser, IsInternalStaffUser]
+
+    def post(self, request, pk):
+        service_request = get_object_or_404(ServiceRequest, pk=pk)
+
+        serializer = AssignRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        old_assignee = service_request.current_assignee_username or ""
+        new_assignee = serializer.validated_data["assignee_id"]
+        assignee_username = serializer.validated_data.get("assignee_username", "")
+        comment = serializer.validated_data.get("comment", "")
+
+        service_request.current_assignee_id = new_assignee
+        service_request.current_assignee_username = assignee_username
+        service_request.save(
+            update_fields=["current_assignee_id", "current_assignee_username", "updated_at"]
+        )
+
+        RequestEvent.objects.create(
+            request=service_request,
+            actor_id=request.user.id,
+            actor_username=request.user.username,
+            actor_role=request.user.role,
+            event_type="assignee_changed",
+            old_value=old_assignee,
+            new_value=assignee_username or str(new_assignee),
+            comment=comment or f"Исполнитель назначен: {assignee_username or new_assignee}",
+        )
+
+        output_serializer = ServiceRequestDetailSerializer(
+            service_request,
+            context={"request": request},
+        )
+        return Response(output_serializer.data, status=200)
+    
+    
+
+class RequestChangeStatusView(APIView):
+    permission_classes = [IsAuthenticatedServiceUser, IsInternalStaffUser]
+
+    def post(self, request, pk):
+        service_request = get_object_or_404(ServiceRequest, pk=pk)
+
+        serializer = ChangeStatusSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        old_status = service_request.status
+        new_status = serializer.validated_data["status"]
+        comment = serializer.validated_data.get("comment", "")
+
+        service_request.status = new_status
+        service_request.save(update_fields=["status", "updated_at"])
+
+        RequestEvent.objects.create(
+            request=service_request,
+            actor_id=request.user.id,
+            actor_username=request.user.username,
+            actor_role=request.user.role,
+            event_type="status_changed",
+            old_value=old_status,
+            new_value=new_status,
+            comment=comment or f"Статус изменён: {old_status} → {new_status}",
+        )
+
+        output_serializer = ServiceRequestDetailSerializer(
+            service_request,
+            context={"request": request},
+        )
+        return Response(output_serializer.data, status=200)

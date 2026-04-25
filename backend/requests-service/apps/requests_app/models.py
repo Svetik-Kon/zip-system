@@ -66,6 +66,7 @@ class ServiceRequest(models.Model):
     created_by_username = models.CharField(max_length=150, blank=True)
 
     current_assignee_id = models.UUIDField(null=True, blank=True)
+    current_assignee_username = models.CharField(max_length=150, blank=True)
     requested_for_user_id = models.UUIDField(null=True, blank=True)
 
     equipment_name = models.CharField(max_length=255, blank=True)
