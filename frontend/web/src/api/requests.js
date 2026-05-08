@@ -29,3 +29,8 @@ export async function changeRequestStatus(requestId, payload) {
   const response = await apiClient.post(`/api/requests/${requestId}/change-status/`, payload);
   return response.data;
 }
+
+export async function changeRequestPriority(requestId, payload) {
+  const response = await apiClient.post(`/api/requests/${requestId}/change-priority/`, payload);
+  return response.data;
+}

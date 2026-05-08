@@ -1,5 +1,6 @@
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
+from django.db.models import Q
 from rest_framework import generics
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -14,6 +15,7 @@ from .serializers import (
     RequestCommentSerializer,
     AssignRequestSerializer,
     ChangeStatusSerializer,
+    ChangePrioritySerializer,
 )
 
 
@@ -35,13 +37,48 @@ class ServiceRequestListCreateView(generics.ListCreateAPIView):
         user = self.request.user
         qs = ServiceRequest.objects.all()
 
+        status_filter = self.request.query_params.get("status")
+        type_filter = self.request.query_params.get("request_type")
+        priority_filter = self.request.query_params.get("priority")
+        search = self.request.query_params.get("search")
+
         if user.role == "customer":
             qs = qs.filter(created_by_id=user.id)
         else:
+            only_my_created = self.request.query_params.get("my_requests")
             assigned_to_me = self.request.query_params.get("assigned_to_me")
+            assignee_filter = self.request.query_params.get("assignee_id")
+
+            if only_my_created == "true":
+                qs = qs.filter(created_by_id=user.id)
 
             if assigned_to_me == "true":
                 qs = qs.filter(current_assignee_id=user.id)
+
+            if assignee_filter:
+                qs = qs.filter(current_assignee_id=assignee_filter)
+
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+
+        if type_filter:
+            qs = qs.filter(request_type=type_filter)
+
+        if priority_filter:
+            qs = qs.filter(priority=priority_filter)
+
+        if search:
+            qs = qs.filter(
+                Q(number__icontains=search)
+                | Q(title__icontains=search)
+                | Q(description__icontains=search)
+                | Q(equipment_name__icontains=search)
+                | Q(equipment_model__icontains=search)
+                | Q(serial_number__icontains=search)
+                | Q(site_name__icontains=search)
+                | Q(created_by_username__icontains=search)
+                | Q(current_assignee_username__icontains=search)
+            )
 
         return qs
 
@@ -143,7 +180,7 @@ class RequestAssignView(APIView):
         )
         return Response(output_serializer.data, status=200)
     
-    
+
 
 class RequestChangeStatusView(APIView):
     permission_classes = [IsAuthenticatedServiceUser, IsInternalStaffUser]
@@ -170,6 +207,43 @@ class RequestChangeStatusView(APIView):
             old_value=old_status,
             new_value=new_status,
             comment=comment or f"Статус изменён: {old_status} → {new_status}",
+        )
+
+        output_serializer = ServiceRequestDetailSerializer(
+            service_request,
+            context={"request": request},
+        )
+        return Response(output_serializer.data, status=200)
+
+
+class RequestChangePriorityView(APIView):
+    permission_classes = [IsAuthenticatedServiceUser]
+
+    def post(self, request, pk):
+        service_request = get_object_or_404(ServiceRequest, pk=pk)
+
+        if request.user.role == "customer" and str(service_request.created_by_id) != str(request.user.id):
+            return Response({"detail": "Нет доступа."}, status=403)
+
+        serializer = ChangePrioritySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        old_priority = service_request.priority
+        new_priority = serializer.validated_data["priority"]
+        comment = serializer.validated_data.get("comment", "")
+
+        service_request.priority = new_priority
+        service_request.save(update_fields=["priority", "updated_at"])
+
+        RequestEvent.objects.create(
+            request=service_request,
+            actor_id=request.user.id,
+            actor_username=request.user.username,
+            actor_role=request.user.role,
+            event_type="priority_changed",
+            old_value=old_priority,
+            new_value=new_priority,
+            comment=comment or f"Приоритет изменен: {old_priority} -> {new_priority}",
         )
 
         output_serializer = ServiceRequestDetailSerializer(

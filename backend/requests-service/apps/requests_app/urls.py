@@ -6,6 +6,7 @@ from .views import (
     RequestCommentCreateView,
     RequestAssignView,
     RequestChangeStatusView,
+    RequestChangePriorityView,
 )
 
 urlpatterns = [
@@ -15,4 +16,5 @@ urlpatterns = [
     path("api/requests/<uuid:pk>/comments/", RequestCommentCreateView.as_view(), name="requests-comment-create"),
     path("api/requests/<uuid:pk>/assign/", RequestAssignView.as_view(), name="requests-assign"),
     path("api/requests/<uuid:pk>/change-status/", RequestChangeStatusView.as_view(), name="requests-change-status"),
+    path("api/requests/<uuid:pk>/change-priority/", RequestChangePriorityView.as_view(), name="requests-change-priority"),
 ]

@@ -58,3 +58,44 @@ export async function createUserRequest(payload) {
 
   return response.data;
 }
+
+export async function getAdminUsersRequest(params = {}) {
+  const token = getAccessToken();
+
+  const response = await axios.get(`${AUTH_BASE_URL}/api/admin/users/`, {
+    params,
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  return response.data;
+}
+
+export async function updateAdminUserRequest(userId, payload) {
+  const token = getAccessToken();
+
+  const response = await axios.patch(`${AUTH_BASE_URL}/api/admin/users/${userId}/`, payload, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  return response.data;
+}
+
+export async function changeAdminUserPasswordRequest(userId, password) {
+  const token = getAccessToken();
+
+  const response = await axios.post(
+    `${AUTH_BASE_URL}/api/admin/users/${userId}/password/`,
+    { password },
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    }
+  );
+
+  return response.data;
+}

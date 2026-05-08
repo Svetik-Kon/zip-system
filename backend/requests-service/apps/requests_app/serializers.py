@@ -4,6 +4,7 @@ from .models import (
     ServiceRequestItem,
     RequestComment,
     RequestEvent,
+    RequestPriority,
     RequestStatus,
     RequestType,
 )
@@ -62,10 +63,12 @@ class ServiceRequestListSerializer(serializers.ModelSerializer):
             "request_type",
             "priority",
             "status",
+            "created_by_id",
             "created_by_username",
+            "current_assignee_id",
+            "current_assignee_username",
             "site_name",
             "created_at",
-            "current_assignee_username",
         )
 
 
@@ -203,4 +206,9 @@ class AssignRequestSerializer(serializers.Serializer):
 
 class ChangeStatusSerializer(serializers.Serializer):
     status = serializers.ChoiceField(choices=ServiceRequest._meta.get_field("status").choices)
+    comment = serializers.CharField(required=False, allow_blank=True)
+
+
+class ChangePrioritySerializer(serializers.Serializer):
+    priority = serializers.ChoiceField(choices=RequestPriority.choices)
     comment = serializers.CharField(required=False, allow_blank=True)

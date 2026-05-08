@@ -1,201 +1,136 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
-import {
-  assignRequest,
-  changeRequestStatus,
-  createComment,
-  getRequestById,
-} from "../api/requests";
+import { assignRequest, changeRequestPriority, changeRequestStatus, createComment, getRequestById } from "../api/requests";
 import { getAssignableUsersRequest } from "../api/auth";
 import { getMe } from "../utils/auth";
 import Navbar from "../components/Navbar";
 import {
+  REQUEST_PRIORITY_LABELS,
+  REQUEST_STATUS_LABELS,
+  getRequestPriorityLabel,
   getRequestStatusLabel,
   getRequestTypeLabel,
   getRoleLabel,
 } from "../utils/dictionaries";
 
-const STATUS_OPTIONS = [
-  { value: "new", label: "Новая" },
-  { value: "in_review", label: "На согласовании" },
-  { value: "diagnostics", label: "Диагностика" },
-  { value: "awaiting_warehouse", label: "Ожидает склад" },
-  { value: "awaiting_procurement", label: "Ожидает закупки" },
-  { value: "reserved", label: "В резерве" },
-  { value: "ready_to_ship", label: "На отгрузке" },
-  { value: "shipped", label: "Отгружено" },
-  { value: "in_lab", label: "В лаборатории" },
-  { value: "received", label: "Получено" },
-  { value: "closed", label: "Закрыта" },
-  { value: "rejected", label: "Отклонена" },
-  { value: "cancelled", label: "Отменена" },
-];
-
 export default function RequestDetailsPage() {
   const { id } = useParams();
   const me = getMe();
-
   const [requestData, setRequestData] = useState(null);
   const [assignableUsers, setAssignableUsers] = useState([]);
-
   const [commentBody, setCommentBody] = useState("");
   const [isInternal, setIsInternal] = useState(false);
-
   const [newStatus, setNewStatus] = useState("in_review");
   const [statusComment, setStatusComment] = useState("");
-
+  const [newPriority, setNewPriority] = useState("medium");
+  const [priorityComment, setPriorityComment] = useState("");
   const [assigneeId, setAssigneeId] = useState("");
   const [assignComment, setAssignComment] = useState("");
-
   const [loading, setLoading] = useState(true);
-  const [commentLoading, setCommentLoading] = useState(false);
-  const [statusLoading, setStatusLoading] = useState(false);
-  const [assignLoading, setAssignLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
   const isCustomer = me?.role === "customer";
   const canManageRequest = !isCustomer;
 
+  const selectedAssignee = useMemo(() => assignableUsers.find((user) => user.id === assigneeId) || null, [assignableUsers, assigneeId]);
+
   useEffect(() => {
     loadAll();
   }, [id]);
 
-  const selectedAssignee = useMemo(() => {
-    return assignableUsers.find((user) => user.id === assigneeId) || null;
-  }, [assignableUsers, assigneeId]);
+  const hydrateForm = (data) => {
+    setNewStatus(data.status || "in_review");
+    setNewPriority(data.priority || "medium");
+    setAssigneeId(data.current_assignee_id || "");
+  };
 
   const loadAll = async () => {
     try {
       setLoading(true);
       setError("");
-
-      const requestPromise = getRequestById(id);
-      const usersPromise = canManageRequest
-        ? getAssignableUsersRequest()
-        : Promise.resolve([]);
-
       const [requestResult, usersResult] = await Promise.all([
-        requestPromise,
-        usersPromise,
+        getRequestById(id),
+        canManageRequest ? getAssignableUsersRequest() : Promise.resolve([]),
       ]);
-
       setRequestData(requestResult);
       setAssignableUsers(usersResult || []);
-
-      if (requestResult?.status) {
-        setNewStatus(requestResult.status);
-      }
-
-      if (requestResult?.current_assignee_id) {
-        setAssigneeId(requestResult.current_assignee_id);
-      }
-    } catch (err) {
+      hydrateForm(requestResult);
+    } catch {
       setError("Не удалось загрузить карточку заявки.");
     } finally {
       setLoading(false);
     }
   };
 
-  const loadRequestOnly = async () => {
-    try {
-      const data = await getRequestById(id);
-      setRequestData(data);
-
-      if (data?.status) {
-        setNewStatus(data.status);
-      }
-
-      if (data?.current_assignee_id) {
-        setAssigneeId(data.current_assignee_id);
-      }
-    } catch (err) {
-      setError("Не удалось обновить карточку заявки.");
-    }
+  const reloadRequest = async () => {
+    const data = await getRequestById(id);
+    setRequestData(data);
+    hydrateForm(data);
   };
 
-  const handleCommentSubmit = async (e) => {
-    e.preventDefault();
-
-    if (!commentBody.trim()) {
-      return;
-    }
-
+  const handleCommentSubmit = async (event) => {
+    event.preventDefault();
+    if (!commentBody.trim()) return;
     try {
-      setCommentLoading(true);
-
-      await createComment(id, {
-        body: commentBody,
-        is_internal: isInternal,
-      });
-
+      setSaving(true);
+      await createComment(id, { body: commentBody, is_internal: canManageRequest ? isInternal : false });
       setCommentBody("");
       setIsInternal(false);
-      await loadRequestOnly();
-    } catch (err) {
+      await reloadRequest();
+    } catch {
       setError("Не удалось добавить комментарий.");
     } finally {
-      setCommentLoading(false);
+      setSaving(false);
     }
   };
 
-  const handleStatusSubmit = async (e) => {
-    e.preventDefault();
-
-    if (!canManageRequest) {
-      return;
-    }
-
+  const handlePrioritySubmit = async (event) => {
+    event.preventDefault();
     try {
-      setStatusLoading(true);
+      setSaving(true);
+      await changeRequestPriority(id, { priority: newPriority, comment: priorityComment });
+      setPriorityComment("");
+      await reloadRequest();
+    } catch {
+      setError("Не удалось изменить приоритет.");
+    } finally {
+      setSaving(false);
+    }
+  };
 
-      await changeRequestStatus(id, {
-        status: newStatus,
-        comment: statusComment,
-      });
-
+  const handleStatusSubmit = async (event) => {
+    event.preventDefault();
+    if (!canManageRequest) return;
+    try {
+      setSaving(true);
+      await changeRequestStatus(id, { status: newStatus, comment: statusComment });
       setStatusComment("");
-      await loadRequestOnly();
-    } catch (err) {
+      await reloadRequest();
+    } catch {
       setError("Не удалось изменить статус.");
     } finally {
-      setStatusLoading(false);
+      setSaving(false);
     }
   };
 
-  const handleAssignSubmit = async (e) => {
-    e.preventDefault();
-
-    if (!canManageRequest) {
-      return;
-    }
-
-    if (!assigneeId) {
-      setError("Выбери исполнителя.");
-      return;
-    }
-
+  const handleAssignSubmit = async (event) => {
+    event.preventDefault();
+    if (!canManageRequest || !assigneeId) return;
     try {
-      setAssignLoading(true);
-
-      await assignRequest(id, {
-        assignee_id: assigneeId,
-        assignee_username: selectedAssignee?.username || "",
-        comment: assignComment,
-      });
-
+      setSaving(true);
+      await assignRequest(id, { assignee_id: assigneeId, assignee_username: selectedAssignee?.username || "", comment: assignComment });
       setAssignComment("");
-      await loadRequestOnly();
-    } catch (err) {
+      await reloadRequest();
+    } catch {
       setError("Не удалось назначить исполнителя.");
     } finally {
-      setAssignLoading(false);
+      setSaving(false);
     }
   };
 
   return (
-    <>
-      <Navbar />
-
+    <Navbar>
       <div className="page">
         {loading ? <p>Загрузка...</p> : null}
         {error ? <div className="error">{error}</div> : null}
@@ -207,169 +142,83 @@ export default function RequestDetailsPage() {
               <p><strong>Заголовок:</strong> {requestData.title}</p>
               <p><strong>Статус:</strong> {getRequestStatusLabel(requestData.status)}</p>
               <p><strong>Тип:</strong> {getRequestTypeLabel(requestData.request_type)}</p>
-              <p><strong>Приоритет:</strong> {requestData.priority}</p>
+              <p><strong>Приоритет:</strong> {getRequestPriorityLabel(requestData.priority)}</p>
               <p><strong>Автор:</strong> {requestData.created_by_username}</p>
-              <p><strong>Описание:</strong> {requestData.description}</p>
-              <p><strong>Оборудование:</strong> {requestData.equipment_name}</p>
-              <p><strong>Модель:</strong> {requestData.equipment_model}</p>
-              <p><strong>Серийный номер:</strong> {requestData.serial_number}</p>
-              <p><strong>Площадка:</strong> {requestData.site_name}</p>
-              <p><strong>Текущий исполнитель:</strong> {requestData.current_assignee_username || "не назначен"}</p>
+              <p><strong>Исполнитель:</strong> {requestData.current_assignee_username || "не назначен"}</p>
+              <p><strong>Описание:</strong> {requestData.description || "-"}</p>
+              <p><strong>Оборудование:</strong> {requestData.equipment_name || "-"} {requestData.equipment_model ? `(${requestData.equipment_model})` : ""}</p>
+              <p><strong>Серийный номер:</strong> {requestData.serial_number || "-"}</p>
+              <p><strong>Площадка:</strong> {requestData.site_name || "-"}</p>
             </div>
 
-            {canManageRequest ? (
-              <>
-                <div className="card">
-                  <h2>Сменить статус</h2>
+            <div className="dashboard-grid">
+              <div className="card">
+                <h2>Изменить приоритет</h2>
+                <form onSubmit={handlePrioritySubmit} className="form">
+                  <select value={newPriority} onChange={(event) => setNewPriority(event.target.value)}>
+                    {Object.entries(REQUEST_PRIORITY_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                  </select>
+                  <textarea placeholder="Комментарий" value={priorityComment} onChange={(event) => setPriorityComment(event.target.value)} />
+                  <button type="submit" disabled={saving}>Сохранить приоритет</button>
+                </form>
+              </div>
 
-                  <form onSubmit={handleStatusSubmit} className="form">
-                    <label>
-                      Новый статус
-                      <select value={newStatus} onChange={(e) => setNewStatus(e.target.value)}>
-                        {STATUS_OPTIONS.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))}
+              {canManageRequest ? (
+                <>
+                  <div className="card">
+                    <h2>Сменить статус</h2>
+                    <form onSubmit={handleStatusSubmit} className="form">
+                      <select value={newStatus} onChange={(event) => setNewStatus(event.target.value)}>
+                        {Object.entries(REQUEST_STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                       </select>
-                    </label>
+                      <textarea placeholder="Комментарий" value={statusComment} onChange={(event) => setStatusComment(event.target.value)} />
+                      <button type="submit" disabled={saving}>Изменить статус</button>
+                    </form>
+                  </div>
 
-                    <label>
-                      Комментарий к смене статуса
-                      <textarea
-                        value={statusComment}
-                        onChange={(e) => setStatusComment(e.target.value)}
-                      />
-                    </label>
-
-                    <button type="submit" disabled={statusLoading}>
-                      {statusLoading ? "Сохранение..." : "Изменить статус"}
-                    </button>
-                  </form>
-                </div>
-
-                <div className="card">
-                  <h2>Назначить / переназначить исполнителя</h2>
-
-                  <form onSubmit={handleAssignSubmit} className="form">
-                    <label>
-                      Исполнитель
-                      <select
-                        value={assigneeId}
-                        onChange={(e) => setAssigneeId(e.target.value)}
-                      >
+                  <div className="card">
+                    <h2>Исполнитель</h2>
+                    <form onSubmit={handleAssignSubmit} className="form">
+                      <select value={assigneeId} onChange={(event) => setAssigneeId(event.target.value)}>
                         <option value="">Выбери исполнителя</option>
-                        {assignableUsers.map((user) => (
-                          <option key={user.id} value={user.id}>
-                            {user.username}
-                            {user.first_name || user.last_name
-                              ? ` — ${user.first_name || ""} ${user.last_name || ""}`.trim()
-                              : ""}
-                            {user.role ? ` (${getRoleLabel(user.role)})` : ""}
-                          </option>
-                        ))}
+                        {assignableUsers.map((user) => <option key={user.id} value={user.id}>{user.username} ({getRoleLabel(user.role)})</option>)}
                       </select>
-                    </label>
-
-                    <label>
-                      Комментарий к назначению
-                      <textarea
-                        value={assignComment}
-                        onChange={(e) => setAssignComment(e.target.value)}
-                      />
-                    </label>
-
-                    <button type="submit" disabled={assignLoading}>
-                      {assignLoading ? "Сохранение..." : "Назначить исполнителя"}
-                    </button>
-                  </form>
-                </div>
-              </>
-            ) : null}
+                      <textarea placeholder="Комментарий" value={assignComment} onChange={(event) => setAssignComment(event.target.value)} />
+                      <button type="submit" disabled={saving}>Назначить</button>
+                    </form>
+                  </div>
+                </>
+              ) : null}
+            </div>
 
             <div className="card">
               <h2>Позиции</h2>
-              {!requestData.items?.length ? (
-                <p>Позиции отсутствуют.</p>
-              ) : (
-                <ul>
-                  {requestData.items.map((item) => (
-                    <li key={item.id}>
-                      {item.item_name} — {item.quantity} шт.
-                    </li>
-                  ))}
-                </ul>
-              )}
+              {!requestData.items?.length ? <p>Позиции отсутствуют.</p> : <ul>{requestData.items.map((item) => <li key={item.id}>{item.item_name} - {item.quantity} шт.</li>)}</ul>}
             </div>
 
             <div className="card">
               <h2>Комментарии</h2>
-
-              {!requestData.comments?.length ? (
-                <p>Комментариев пока нет.</p>
-              ) : (
+              {!requestData.comments?.length ? <p>Комментариев пока нет.</p> : (
                 <ul className="activity-list">
-                  {requestData.comments.map((comment) => (
-                    <li key={comment.id}>
-                      <strong>{comment.author_username}</strong> ({getRoleLabel(comment.author_role)})<br />
-                      {comment.body}
-                    </li>
-                  ))}
+                  {requestData.comments.map((comment) => <li key={comment.id}><strong>{comment.author_username}</strong> ({getRoleLabel(comment.author_role)})<br />{comment.body}</li>)}
                 </ul>
               )}
-
               <form onSubmit={handleCommentSubmit} className="form">
-                <label>
-                  Новый комментарий
-                  <textarea
-                    value={commentBody}
-                    onChange={(e) => setCommentBody(e.target.value)}
-                  />
-                </label>
-
-                {canManageRequest ? (
-                  <label className="checkbox">
-                    <input
-                      type="checkbox"
-                      checked={isInternal}
-                      onChange={(e) => setIsInternal(e.target.checked)}
-                    />
-                    Внутренний комментарий
-                  </label>
-                ) : null}
-
-                <button type="submit" disabled={commentLoading}>
-                  {commentLoading ? "Отправка..." : "Добавить комментарий"}
-                </button>
+                <textarea placeholder="Новый комментарий" value={commentBody} onChange={(event) => setCommentBody(event.target.value)} />
+                {canManageRequest ? <label className="checkbox"><input type="checkbox" checked={isInternal} onChange={(event) => setIsInternal(event.target.checked)} />Внутренний комментарий</label> : null}
+                <button type="submit" disabled={saving}>Добавить комментарий</button>
               </form>
             </div>
 
             <div className="card">
               <h2>История</h2>
-
-              {!requestData.events?.length ? (
-                <p>История пока пустая.</p>
-              ) : (
+              {!requestData.events?.length ? <p>История пока пустая.</p> : (
                 <ul className="activity-list">
                   {requestData.events.map((event) => (
                     <li key={event.id}>
-                      <strong>{event.event_type}</strong> — {event.actor_username} ({getRoleLabel(event.actor_role)})
-                      {event.old_value || event.new_value ? (
-                        <>
-                          <br />
-                          <span>
-                            {event.old_value ? `было: ${event.old_value}` : ""}
-                            {event.old_value && event.new_value ? " | " : ""}
-                            {event.new_value ? `стало: ${event.new_value}` : ""}
-                          </span>
-                        </>
-                      ) : null}
-                      {event.comment ? (
-                        <>
-                          <br />
-                          <span>{event.comment}</span>
-                        </>
-                      ) : null}
+                      <strong>{event.event_type}</strong> - {event.actor_username} ({getRoleLabel(event.actor_role)})
+                      {event.old_value || event.new_value ? <><br />{event.old_value ? `было: ${event.old_value}` : ""}{event.old_value && event.new_value ? " | " : ""}{event.new_value ? `стало: ${event.new_value}` : ""}</> : null}
+                      {event.comment ? <><br />{event.comment}</> : null}
                     </li>
                   ))}
                 </ul>
@@ -378,6 +227,6 @@ export default function RequestDetailsPage() {
           </>
         ) : null}
       </div>
-    </>
+    </Navbar>
   );
 }
