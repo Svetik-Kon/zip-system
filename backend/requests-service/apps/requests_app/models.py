@@ -178,3 +178,28 @@ class RequestEvent(models.Model):
 
     def __str__(self):
         return f"{self.event_type} - {self.created_at}"
+
+
+class Notification(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    request = models.ForeignKey(
+        ServiceRequest,
+        on_delete=models.CASCADE,
+        related_name="notifications",
+    )
+    recipient_id = models.UUIDField(null=True, blank=True)
+    recipient_role = models.CharField(max_length=50, blank=True)
+    event_type = models.CharField(max_length=100)
+    message = models.CharField(max_length=255)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["recipient_id", "expires_at"], name="requests_ap_recipie_7c457b_idx"),
+            models.Index(fields=["recipient_role", "expires_at"], name="requests_ap_recipie_491d1b_idx"),
+        ]
+
+    def __str__(self):
+        return self.message

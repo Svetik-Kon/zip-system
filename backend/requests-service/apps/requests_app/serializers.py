@@ -4,6 +4,7 @@ from .models import (
     ServiceRequestItem,
     RequestComment,
     RequestEvent,
+    Notification,
     RequestPriority,
     RequestStatus,
     RequestType,
@@ -63,6 +64,25 @@ class RequestEventSerializer(serializers.ModelSerializer):
             "new_value",
             "comment",
             "created_at",
+        )
+
+
+class NotificationSerializer(serializers.ModelSerializer):
+    request_id = serializers.UUIDField(source="request.id", read_only=True)
+    number = serializers.CharField(source="request.number", read_only=True)
+    title = serializers.CharField(source="request.title", read_only=True)
+
+    class Meta:
+        model = Notification
+        fields = (
+            "id",
+            "request_id",
+            "number",
+            "title",
+            "event_type",
+            "message",
+            "created_at",
+            "expires_at",
         )
 
 

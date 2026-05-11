@@ -6,7 +6,7 @@ from rest_framework import generics
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import ServiceRequest, ServiceRequestItem, RequestComment, RequestEvent, RequestStatus
+from .models import ServiceRequest, ServiceRequestItem, RequestComment, RequestEvent, RequestStatus, Notification
 
 
 from .serializers import (
@@ -19,6 +19,7 @@ from .serializers import (
     ChangePrioritySerializer,
     ConfirmReceiptSerializer,
     RequestItemWorkflowSerializer,
+    NotificationSerializer,
 )
 
 
@@ -31,6 +32,37 @@ from .permissions import (
 
 def health_check(request):
     return JsonResponse({"status": "ok", "service": "requests-service"})
+
+
+def create_notification(service_request, event_type, message, recipient_id=None, recipient_role="", hours=2):
+    if not recipient_id and not recipient_role:
+        return None
+    return Notification.objects.create(
+        request=service_request,
+        recipient_id=recipient_id,
+        recipient_role=recipient_role,
+        event_type=event_type,
+        message=message[:255],
+        expires_at=timezone.now() + timezone.timedelta(hours=hours),
+    )
+
+
+def notify_user_once(service_request, event_type, message, recipient_id, actor_id=None):
+    if not recipient_id or (actor_id and str(recipient_id) == str(actor_id)):
+        return
+    create_notification(service_request, event_type, message, recipient_id=recipient_id)
+
+
+def notify_role(service_request, event_type, message, role):
+    create_notification(service_request, event_type, message, recipient_role=role)
+
+
+def notify_request_author(service_request, event_type, message, actor_id=None):
+    notify_user_once(service_request, event_type, message, service_request.created_by_id, actor_id=actor_id)
+
+
+def notify_current_assignee(service_request, event_type, message, actor_id=None):
+    notify_user_once(service_request, event_type, message, service_request.current_assignee_id, actor_id=actor_id)
 
 
 WORKFLOW_TRANSITIONS = {
@@ -224,6 +256,10 @@ class RequestCommentCreateView(APIView):
             event_type="comment_added",
             comment=comment.body[:255],
         )
+        if not is_internal:
+            message = f"Новый комментарий в {service_request.number}"
+            notify_request_author(service_request, "comment_added", message, actor_id=request.user.id)
+        notify_current_assignee(service_request, "comment_added", f"Новый комментарий в назначенной заявке {service_request.number}", actor_id=request.user.id)
 
         return Response(RequestCommentSerializer(comment).data, status=201)
     
@@ -257,6 +293,13 @@ class RequestAssignView(APIView):
             old_value=old_assignee,
             new_value=assignee_username or str(new_assignee),
             comment=comment or f"Исполнитель назначен: {assignee_username or new_assignee}",
+        )
+        notify_user_once(
+            service_request,
+            "assignee_changed",
+            f"На вас назначена заявка {service_request.number}",
+            new_assignee,
+            actor_id=request.user.id,
         )
 
         output_serializer = ServiceRequestDetailSerializer(
@@ -296,6 +339,14 @@ class RequestChangeStatusView(APIView):
             new_value=new_status,
             comment=comment or f"Статус изменён: {old_status} → {new_status}",
         )
+        message = f"Статус заявки {service_request.number} изменен: {old_status} -> {new_status}"
+        notify_request_author(service_request, "status_changed", message, actor_id=request.user.id)
+        notify_current_assignee(service_request, "status_changed", message, actor_id=request.user.id)
+        if new_status == RequestStatus.IN_REVIEW:
+            notify_role(service_request, "approval_required", f"{service_request.number} ожидает согласования", "manager")
+        if new_status == RequestStatus.SHORTAGE:
+            notify_role(service_request, "shortage", f"По заявке {service_request.number} зафиксирован дефицит", "manager")
+            notify_role(service_request, "shortage", f"По заявке {service_request.number} зафиксирован дефицит", "procurement")
 
         output_serializer = ServiceRequestDetailSerializer(
             service_request,
@@ -334,6 +385,10 @@ class RequestConfirmReceiptView(APIView):
             new_value=RequestStatus.RECEIVED,
             comment=serializer.validated_data.get("comment", "") or "Получение подтверждено заказчиком",
         )
+        message = f"Получение по заявке {service_request.number} подтверждено"
+        notify_current_assignee(service_request, "receipt_confirmed", message, actor_id=request.user.id)
+        notify_role(service_request, "receipt_confirmed", message, "manager")
+        notify_role(service_request, "receipt_confirmed", message, "warehouse")
 
         output_serializer = ServiceRequestDetailSerializer(service_request, context={"request": request})
         return Response(output_serializer.data, status=200)
@@ -414,13 +469,20 @@ class RequestItemWorkflowView(APIView):
 
 
 class ReactionNotificationsView(APIView):
-    permission_classes = [IsAuthenticatedServiceUser, IsInternalStaffUser]
+    permission_classes = [IsAuthenticatedServiceUser]
 
     def get(self, request):
-        if request.user.role not in ("admin", "manager"):
-            return Response([], status=200)
-
         now = timezone.now()
+        Notification.objects.filter(expires_at__lte=now).delete()
+        qs = Notification.objects.select_related("request").filter(
+            Q(recipient_id=request.user.id) | Q(recipient_role=request.user.role),
+            expires_at__gt=now,
+        )
+        notifications = list(NotificationSerializer(qs, many=True).data)
+
+        if request.user.role not in ("admin", "manager"):
+            return Response(notifications, status=200)
+
         deadline = now - timezone.timedelta(minutes=30)
         expires_after = now - timezone.timedelta(hours=2, minutes=30)
         qs = ServiceRequest.objects.filter(
@@ -430,7 +492,7 @@ class ReactionNotificationsView(APIView):
             created_at__gte=expires_after,
         ).order_by("-created_at")
 
-        notifications = [
+        notifications.extend([
             {
                 "id": f"reaction-{item.id}",
                 "request_id": str(item.id),
@@ -441,7 +503,7 @@ class ReactionNotificationsView(APIView):
                 "expires_at": item.created_at + timezone.timedelta(hours=2, minutes=30),
             }
             for item in qs
-        ]
+        ])
         confirmation_deadline = now - timezone.timedelta(hours=24)
         confirmation_expires_after = now - timezone.timedelta(hours=26)
         confirmation_qs = ServiceRequest.objects.filter(

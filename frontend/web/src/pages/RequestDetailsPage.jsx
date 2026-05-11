@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
-import { assignRequest, changeRequestPriority, changeRequestStatus, confirmRequestReceipt, createComment, getRequestById, updateRequestItemWorkflow } from "../api/requests";
+import { assignRequest, changeRequestPriority, changeRequestStatus, confirmRequestReceipt, createComment, getRequestById } from "../api/requests";
 import { getAssignableUsersRequest } from "../api/auth";
 import { getMe } from "../utils/auth";
 import Navbar from "../components/Navbar";
@@ -29,15 +29,6 @@ const statusTone = {
   closed: "neutral",
   rejected: "danger",
   cancelled: "neutral",
-};
-
-const lineStatusLabels = {
-  shortage: "Дефицит",
-  waiting: "Ожидание",
-  replacement: "Замена",
-  reallocation: "Перераспределение",
-  partial: "Частично",
-  fulfilled: "Исполнено",
 };
 
 const includesText = (value, query) => String(value || "").toLowerCase().includes(query);
@@ -90,7 +81,6 @@ export default function RequestDetailsPage() {
   const [assigneeId, setAssigneeId] = useState("");
   const [statusSearch, setStatusSearch] = useState("");
   const [assigneeSearch, setAssigneeSearch] = useState("");
-  const [itemDrafts, setItemDrafts] = useState({});
   const [historyOpen, setHistoryOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -141,16 +131,6 @@ export default function RequestDetailsPage() {
     setNewStatus(data.status || "in_review");
     setNewPriority(data.priority || "medium");
     setAssigneeId(data.current_assignee_id || "");
-    setItemDrafts(Object.fromEntries((data.items || []).map((item) => [item.id, {
-      reserved_quantity: item.reserved_quantity || 0,
-      issued_quantity: item.issued_quantity || 0,
-      shortage_quantity: item.shortage_quantity || 0,
-      line_status: item.line_status || "",
-      shortage_reason: item.shortage_reason || "",
-      replacement_item_name: item.replacement_item_name || "",
-      replacement_status: item.replacement_status || "",
-      allow_analog: Boolean(item.allow_analog),
-    }])));
   };
 
   const loadAll = async () => {
@@ -242,37 +222,6 @@ export default function RequestDetailsPage() {
       hydrateForm(data);
     } catch {
       setError("Не удалось подтвердить получение.");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleItemDraftChange = (itemId, field, value) => {
-    setItemDrafts((prev) => ({
-      ...prev,
-      [itemId]: {
-        ...(prev[itemId] || {}),
-        [field]: value,
-      },
-    }));
-  };
-
-  const handleItemWorkflowSubmit = async (event, itemId) => {
-    event.preventDefault();
-    if (!canManageRequest) return;
-    try {
-      setSaving(true);
-      const draft = itemDrafts[itemId] || {};
-      const data = await updateRequestItemWorkflow(id, itemId, {
-        ...draft,
-        reserved_quantity: Number(draft.reserved_quantity || 0),
-        issued_quantity: Number(draft.issued_quantity || 0),
-        shortage_quantity: Number(draft.shortage_quantity || 0),
-      });
-      setRequestData(data);
-      hydrateForm(data);
-    } catch {
-      setError("Не удалось обновить позицию заявки.");
     } finally {
       setSaving(false);
     }
@@ -370,83 +319,18 @@ export default function RequestDetailsPage() {
               ) : null}
             </div>
 
-            {requestData.items?.length ? (
-            <div className="card">
-              <h2>Позиции</h2>
-                <div className="request-item-list">
-                  {requestData.items.map((item) => (
-                    <div className="request-item-row" key={item.id}>
-                      <div>
-                        <strong>{item.item_name}</strong>
-                        <span>{lineStatusLabels[item.line_status] || item.line_status || "Обычная позиция"}</span>
-                      </div>
-                      <div><span>Запрошено</span><strong>{item.quantity}</strong></div>
-                      <div><span>Резерв</span><strong>{item.reserved_quantity || 0}</strong></div>
-                      <div><span>Выдано</span><strong>{item.issued_quantity || 0}</strong></div>
-                      <div><span>Дефицит</span><strong>{item.shortage_quantity || 0}</strong></div>
-                      {item.shortage_reason || item.replacement_item_name ? (
-                        <p>
-                          {item.shortage_reason ? `Причина: ${item.shortage_reason}` : ""}
-                          {item.shortage_reason && item.replacement_item_name ? " | " : ""}
-                          {item.replacement_item_name ? `Замена: ${item.replacement_item_name}` : ""}
-                        </p>
-                      ) : null}
-                      {canManageRequest ? (
-                        <form className="request-item-workflow" onSubmit={(event) => handleItemWorkflowSubmit(event, item.id)}>
-                          <label>
-                            Статус строки
-                            <select value={itemDrafts[item.id]?.line_status || ""} onChange={(event) => handleItemDraftChange(item.id, "line_status", event.target.value)}>
-                              <option value="">Обычная позиция</option>
-                              <option value="shortage">Дефицит</option>
-                              <option value="waiting">Ожидание</option>
-                              <option value="replacement">Замена</option>
-                              <option value="reallocation">Перераспределение</option>
-                              <option value="partial">Частично</option>
-                              <option value="fulfilled">Исполнено</option>
-                            </select>
-                          </label>
-                          <label>
-                            Резерв
-                            <input type="number" min="0" value={itemDrafts[item.id]?.reserved_quantity ?? 0} onChange={(event) => handleItemDraftChange(item.id, "reserved_quantity", event.target.value)} />
-                          </label>
-                          <label>
-                            Выдано
-                            <input type="number" min="0" value={itemDrafts[item.id]?.issued_quantity ?? 0} onChange={(event) => handleItemDraftChange(item.id, "issued_quantity", event.target.value)} />
-                          </label>
-                          <label>
-                            Дефицит
-                            <input type="number" min="0" value={itemDrafts[item.id]?.shortage_quantity ?? 0} onChange={(event) => handleItemDraftChange(item.id, "shortage_quantity", event.target.value)} />
-                          </label>
-                          <label>
-                            Причина дефицита
-                            <input value={itemDrafts[item.id]?.shortage_reason || ""} onChange={(event) => handleItemDraftChange(item.id, "shortage_reason", event.target.value)} />
-                          </label>
-                          <label>
-                            Аналог / замена
-                            <input value={itemDrafts[item.id]?.replacement_item_name || ""} onChange={(event) => handleItemDraftChange(item.id, "replacement_item_name", event.target.value)} />
-                          </label>
-                          <label>
-                            Статус замены
-                            <input value={itemDrafts[item.id]?.replacement_status || ""} onChange={(event) => handleItemDraftChange(item.id, "replacement_status", event.target.value)} />
-                          </label>
-                          <label className="checkbox request-item-checkbox">
-                            <input type="checkbox" checked={Boolean(itemDrafts[item.id]?.allow_analog)} onChange={(event) => handleItemDraftChange(item.id, "allow_analog", event.target.checked)} />
-                            Можно аналог
-                          </label>
-                          <button type="submit" disabled={saving}>Сохранить строку</button>
-                        </form>
-                      ) : null}
-                    </div>
-                  ))}
-                </div>
-            </div>
-            ) : null}
-
             <div className="card">
               <h2>Комментарии</h2>
               {!requestData.comments?.length ? <p>Комментариев пока нет.</p> : (
                 <ul className="activity-list">
-                  {requestData.comments.map((comment) => <li key={comment.id}><strong>{comment.author_username}</strong> ({getRoleLabel(comment.author_role)})<br />{comment.body}</li>)}
+                  {requestData.comments.map((comment) => (
+                    <li className={comment.is_internal ? "internal-comment" : ""} key={comment.id}>
+                      <strong>{comment.author_username}</strong> ({getRoleLabel(comment.author_role)})
+                      {comment.is_internal ? <span className="badge badge-yellow comment-badge">Внутренний</span> : null}
+                      <br />
+                      {comment.body}
+                    </li>
+                  ))}
                 </ul>
               )}
               <form onSubmit={handleCommentSubmit} className="form">

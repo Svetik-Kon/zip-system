@@ -12,7 +12,7 @@ export default function Navbar({ children }) {
   const [notifications, setNotifications] = useState([]);
   const isCustomer = me?.role === "customer";
   const canUseMovements = ["admin", "warehouse"].includes(me?.role);
-  const canSeeNotifications = ["admin", "manager"].includes(me?.role);
+  const canSeeNotifications = Boolean(me);
 
   useEffect(() => {
     if (!canSeeNotifications) return;

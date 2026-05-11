@@ -464,6 +464,19 @@ select[multiple] {
   margin-bottom: 10px;
 }
 
+.internal-comment {
+  background: #fff8d8;
+  border: 1px solid #d7b900;
+  border-radius: 8px;
+  list-style-position: inside;
+  padding: 8px 10px;
+}
+
+.comment-badge {
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
 .badge-row {
   align-items: center;
   display: flex;
