@@ -13,7 +13,20 @@ from .models import (
 class ServiceRequestItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = ServiceRequestItem
-        fields = ("id", "item_name", "quantity", "allow_analog", "comment")
+        fields = (
+            "id",
+            "item_name",
+            "quantity",
+            "reserved_quantity",
+            "issued_quantity",
+            "shortage_quantity",
+            "line_status",
+            "shortage_reason",
+            "replacement_item_name",
+            "replacement_status",
+            "allow_analog",
+            "comment",
+        )
 
 
 class RequestCommentSerializer(serializers.ModelSerializer):
@@ -212,3 +225,30 @@ class ChangeStatusSerializer(serializers.Serializer):
 class ChangePrioritySerializer(serializers.Serializer):
     priority = serializers.ChoiceField(choices=RequestPriority.choices)
     comment = serializers.CharField(required=False, allow_blank=True)
+
+
+class RequestItemWorkflowSerializer(serializers.ModelSerializer):
+    comment = serializers.CharField(required=False, allow_blank=True)
+
+    class Meta:
+        model = ServiceRequestItem
+        fields = (
+            "reserved_quantity",
+            "issued_quantity",
+            "shortage_quantity",
+            "line_status",
+            "shortage_reason",
+            "replacement_item_name",
+            "replacement_status",
+            "allow_analog",
+            "comment",
+        )
+
+    def validate(self, attrs):
+        instance = self.instance
+        quantity = instance.quantity
+        for field in ("reserved_quantity", "issued_quantity", "shortage_quantity"):
+            value = attrs.get(field, getattr(instance, field))
+            if value > quantity:
+                raise serializers.ValidationError({field: "Количество не может быть больше запрошенного."})
+        return attrs

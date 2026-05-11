@@ -62,6 +62,7 @@ class InventoryReservation(models.Model):
     )
     created_by_id = models.UUIDField(null=True, blank=True)
     created_by_username = models.CharField(max_length=150, blank=True)
+    is_hard = models.BooleanField(default=False)
     comment = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

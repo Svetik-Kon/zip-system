@@ -8,6 +8,7 @@ export default function Navbar({ children }) {
   const me = getMe();
   const [open, setOpen] = useState(true);
   const isCustomer = me?.role === "customer";
+  const canUseMovements = !isCustomer && me?.role !== "manager";
 
   const handleLogout = () => {
     clearAuth();
@@ -20,7 +21,8 @@ export default function Navbar({ children }) {
     !isCustomer ? { to: "/requests?assigned_to_me=true", label: "Назначенные", hint: "Мои" } : null,
     !isCustomer ? { to: "/catalog", label: "Каталог", hint: "Номенклатура" } : null,
     !isCustomer ? { to: "/inventory", label: "Склад", hint: "Остатки" } : null,
-    !isCustomer ? { to: "/movements", label: "Движения", hint: "Операции" } : null,
+    !isCustomer ? { to: "/contracts", label: "Договоры", hint: "Заказчики" } : null,
+    canUseMovements ? { to: "/movements", label: "Движения", hint: "Операции" } : null,
     me?.role === "admin" ? { to: "/admin/users", label: "Пользователи", hint: "Доступ" } : null,
   ].filter(Boolean);
 

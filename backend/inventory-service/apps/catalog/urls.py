@@ -1,6 +1,7 @@
 from django.urls import path
 from .views import (
     CustomerContractListCreateView,
+    CustomerContractDetailView,
     EquipmentComponentListCreateView,
     EquipmentModelListCreateView,
     EquipmentUnitDetailView,
@@ -8,6 +9,7 @@ from .views import (
     InventoryBalanceListCreateView,
     InventoryItemDetailView,
     InventoryItemListCreateView,
+    InventoryReservationIncreaseView,
     InventoryReservationListCreateView,
     InventoryReservationReleaseView,
     InventoryTransactionListCreateView,
@@ -24,11 +26,13 @@ urlpatterns = [
     path("api/catalog/components/", EquipmentComponentListCreateView.as_view()),
     path("api/catalog/analogs/", ItemAnalogListCreateView.as_view()),
     path("api/contracts/", CustomerContractListCreateView.as_view()),
+    path("api/contracts/<uuid:pk>/", CustomerContractDetailView.as_view()),
     path("api/equipment-units/", EquipmentUnitListCreateView.as_view()),
     path("api/equipment-units/<uuid:pk>/", EquipmentUnitDetailView.as_view()),
     path("api/locations/", StorageLocationListCreateView.as_view()),
     path("api/balances/", InventoryBalanceListCreateView.as_view()),
     path("api/reservations/", InventoryReservationListCreateView.as_view()),
     path("api/reservations/<uuid:pk>/release/", InventoryReservationReleaseView.as_view()),
+    path("api/reservations/<uuid:pk>/increase/", InventoryReservationIncreaseView.as_view()),
     path("api/transactions/", InventoryTransactionListCreateView.as_view()),
 ]

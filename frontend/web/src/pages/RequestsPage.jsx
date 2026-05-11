@@ -11,6 +11,41 @@ import {
   getRequestTypeLabel,
 } from "../utils/dictionaries";
 
+const priorityTone = {
+  critical: "danger",
+  high: "orange",
+  medium: "yellow",
+  low: "green",
+};
+
+const statusTone = {
+  shortage: "danger",
+  awaiting_procurement: "orange",
+  awaiting_replacement: "orange",
+  awaiting_reallocation: "orange",
+  awaiting_return: "yellow",
+  partially_fulfilled: "blue",
+  reserved: "blue",
+  ready_to_ship: "green",
+  shipped: "green",
+  closed: "neutral",
+  rejected: "danger",
+  cancelled: "neutral",
+};
+
+const activeWorkStatuses = [
+  "diagnostics",
+  "awaiting_warehouse",
+  "awaiting_procurement",
+  "awaiting_return",
+  "awaiting_replacement",
+  "awaiting_reallocation",
+  "partially_fulfilled",
+  "shortage",
+  "reserved",
+  "ready_to_ship",
+];
+
 export default function RequestsPage() {
   const location = useLocation();
   const [requests, setRequests] = useState([]);
@@ -73,7 +108,7 @@ export default function RequestsPage() {
         <div className="metric-grid">
           <div className="metric-card">Открытые заявки<strong>{requests.filter((item) => !["closed", "cancelled", "rejected"].includes(item.status)).length}</strong></div>
           <div className="metric-card">Критические<strong>{requests.filter((item) => item.priority === "critical").length}</strong></div>
-          <div className="metric-card">В работе<strong>{requests.filter((item) => ["diagnostics", "awaiting_warehouse", "awaiting_procurement", "reserved"].includes(item.status)).length}</strong></div>
+          <div className="metric-card">В работе<strong>{requests.filter((item) => activeWorkStatuses.includes(item.status)).length}</strong></div>
         </div>
 
         <form className="card filters" onSubmit={loadRequests}>
@@ -124,8 +159,8 @@ export default function RequestsPage() {
                       <td><Link to={`/requests/${item.id}`}>{item.number}</Link></td>
                       <td>{item.title}</td>
                       <td>{getRequestTypeLabel(item.request_type)}</td>
-                      <td>{getRequestPriorityLabel(item.priority)}</td>
-                      <td>{getRequestStatusLabel(item.status)}</td>
+                      <td><span className={`badge badge-${priorityTone[item.priority] || "neutral"}`}>{getRequestPriorityLabel(item.priority)}</span></td>
+                      <td><span className={`badge badge-${statusTone[item.status] || "neutral"}`}>{getRequestStatusLabel(item.status)}</span></td>
                       <td>{item.created_by_username}</td>
                       <td>{item.current_assignee_username || "-"}</td>
                       <td>{new Date(item.created_at).toLocaleString()}</td>

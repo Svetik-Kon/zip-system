@@ -5,6 +5,7 @@ import CreateRequestPage from "./pages/CreateRequestPage";
 import RequestDetailsPage from "./pages/RequestDetailsPage";
 import CatalogPage from "./pages/CatalogPage";
 import InventoryPage from "./pages/InventoryPage";
+import ContractsPage from "./pages/ContractsPage";
 import MovementsPage from "./pages/MovementsPage";
 import ProtectedRoute from "./components/ProtectedRoute";
 import { isAuthenticated } from "./utils/auth";
@@ -18,6 +19,14 @@ function HomeRedirect() {
 function InternalOnly({ children }) {
   const me = getMe();
   if (me?.role === "customer") {
+    return <Navigate to="/requests" replace />;
+  }
+  return children;
+}
+
+function WarehouseOnly({ children }) {
+  const me = getMe();
+  if (me?.role === "customer" || me?.role === "manager") {
     return <Navigate to="/requests" replace />;
   }
   return children;
@@ -78,10 +87,19 @@ export default function App() {
         />
 
         <Route
+          path="/contracts"
+          element={
+            <ProtectedRoute>
+              <InternalOnly><ContractsPage /></InternalOnly>
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
           path="/movements"
           element={
             <ProtectedRoute>
-              <InternalOnly><MovementsPage /></InternalOnly>
+              <WarehouseOnly><MovementsPage /></WarehouseOnly>
             </ProtectedRoute>
           }
         />

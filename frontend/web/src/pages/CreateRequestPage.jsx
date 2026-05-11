@@ -18,10 +18,6 @@ export default function CreateRequestPage() {
     equipment_model: "",
     serial_number: "",
     site_name: "",
-    item_name: "",
-    quantity: 1,
-    allow_analog: false,
-    item_comment: "",
   });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -47,7 +43,7 @@ export default function CreateRequestPage() {
         equipment_model: form.equipment_model,
         serial_number: form.serial_number,
         site_name: form.site_name,
-        items: form.item_name ? [{ item_name: form.item_name, quantity: Number(form.quantity), allow_analog: form.allow_analog, comment: form.item_comment }] : [],
+        items: [],
       });
       navigate(`/requests/${created.id}`);
     } catch {
@@ -71,10 +67,6 @@ export default function CreateRequestPage() {
             <label>Серийный номер<input name="serial_number" value={form.serial_number} onChange={handleChange} /></label>
             <label>Площадка / объект<input name="site_name" value={form.site_name} onChange={handleChange} /></label>
             <label>Описание<textarea name="description" value={form.description} onChange={handleChange} /></label>
-            <label>Позиция заявки<input name="item_name" value={form.item_name} onChange={handleChange} /></label>
-            <label>Количество<input type="number" min="1" name="quantity" value={form.quantity} onChange={handleChange} /></label>
-            <label className="checkbox"><input type="checkbox" name="allow_analog" checked={form.allow_analog} onChange={handleChange} />Разрешить аналог</label>
-            <label>Комментарий к позиции<textarea name="item_comment" value={form.item_comment} onChange={handleChange} /></label>
             {error ? <div className="error">{error}</div> : null}
             <button type="submit" disabled={loading}>{loading ? "Создание..." : "Создать заявку"}</button>
           </form>

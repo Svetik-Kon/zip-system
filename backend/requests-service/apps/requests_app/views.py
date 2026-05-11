@@ -5,7 +5,7 @@ from rest_framework import generics
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import ServiceRequest, RequestComment, RequestEvent
+from .models import ServiceRequest, ServiceRequestItem, RequestComment, RequestEvent
 
 
 from .serializers import (
@@ -16,6 +16,7 @@ from .serializers import (
     AssignRequestSerializer,
     ChangeStatusSerializer,
     ChangePrioritySerializer,
+    RequestItemWorkflowSerializer,
 )
 
 
@@ -250,4 +251,41 @@ class RequestChangePriorityView(APIView):
             service_request,
             context={"request": request},
         )
+        return Response(output_serializer.data, status=200)
+
+
+class RequestItemWorkflowView(APIView):
+    permission_classes = [IsAuthenticatedServiceUser, IsInternalStaffUser]
+
+    def patch(self, request, pk, item_pk):
+        service_request = get_object_or_404(ServiceRequest, pk=pk)
+        item = get_object_or_404(ServiceRequestItem, pk=item_pk, request=service_request)
+
+        old_value = (
+            f"резерв {item.reserved_quantity}, выдано {item.issued_quantity}, "
+            f"дефицит {item.shortage_quantity}, статус {item.line_status or '-'}"
+        )
+
+        serializer = RequestItemWorkflowSerializer(item, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+
+        comment = serializer.validated_data.get("comment", "")
+        new_value = (
+            f"резерв {item.reserved_quantity}, выдано {item.issued_quantity}, "
+            f"дефицит {item.shortage_quantity}, статус {item.line_status or '-'}"
+        )
+
+        RequestEvent.objects.create(
+            request=service_request,
+            actor_id=request.user.id,
+            actor_username=request.user.username,
+            actor_role=request.user.role,
+            event_type="item_workflow_updated",
+            old_value=old_value,
+            new_value=new_value,
+            comment=comment or f"Обновлена позиция: {item.item_name}",
+        )
+
+        output_serializer = ServiceRequestDetailSerializer(service_request, context={"request": request})
         return Response(output_serializer.data, status=200)

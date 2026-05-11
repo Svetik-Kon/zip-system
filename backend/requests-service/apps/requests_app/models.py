@@ -22,6 +22,11 @@ class RequestStatus(models.TextChoices):
     DIAGNOSTICS = "diagnostics", "Диагностика"
     AWAITING_WAREHOUSE = "awaiting_warehouse", "Ожидает склад"
     AWAITING_PROCUREMENT = "awaiting_procurement", "Ожидает закупки"
+    AWAITING_RETURN = "awaiting_return", "Ожидает возврата"
+    AWAITING_REPLACEMENT = "awaiting_replacement", "Ожидает замены"
+    AWAITING_REALLOCATION = "awaiting_reallocation", "Ожидает перераспределения"
+    PARTIALLY_FULFILLED = "partially_fulfilled", "Частично исполнена"
+    SHORTAGE = "shortage", "Дефицит"
     RESERVED = "reserved", "Зарезервировано"
     READY_TO_SHIP = "ready_to_ship", "Готово к отгрузке"
     SHIPPED = "shipped", "Отгружено"
@@ -110,6 +115,13 @@ class ServiceRequestItem(models.Model):
     )
     item_name = models.CharField(max_length=255)
     quantity = models.PositiveIntegerField(default=1)
+    reserved_quantity = models.PositiveIntegerField(default=0)
+    issued_quantity = models.PositiveIntegerField(default=0)
+    shortage_quantity = models.PositiveIntegerField(default=0)
+    line_status = models.CharField(max_length=50, blank=True, default="")
+    shortage_reason = models.CharField(max_length=255, blank=True)
+    replacement_item_name = models.CharField(max_length=255, blank=True)
+    replacement_status = models.CharField(max_length=50, blank=True)
     allow_analog = models.BooleanField(default=False)
     comment = models.TextField(blank=True)
 

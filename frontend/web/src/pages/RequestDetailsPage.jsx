@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
-import { assignRequest, changeRequestPriority, changeRequestStatus, createComment, getRequestById } from "../api/requests";
+import { assignRequest, changeRequestPriority, changeRequestStatus, createComment, getRequestById, updateRequestItemWorkflow } from "../api/requests";
 import { getAssignableUsersRequest } from "../api/auth";
 import { getMe } from "../utils/auth";
 import Navbar from "../components/Navbar";
@@ -12,6 +12,34 @@ import {
   getRequestTypeLabel,
   getRoleLabel,
 } from "../utils/dictionaries";
+
+const priorityTone = { critical: "danger", high: "orange", medium: "yellow", low: "green" };
+
+const statusTone = {
+  shortage: "danger",
+  awaiting_procurement: "orange",
+  awaiting_replacement: "orange",
+  awaiting_reallocation: "orange",
+  awaiting_return: "yellow",
+  partially_fulfilled: "blue",
+  reserved: "blue",
+  ready_to_ship: "green",
+  shipped: "green",
+  closed: "neutral",
+  rejected: "danger",
+  cancelled: "neutral",
+};
+
+const lineStatusLabels = {
+  shortage: "Дефицит",
+  waiting: "Ожидание",
+  replacement: "Замена",
+  reallocation: "Перераспределение",
+  partial: "Частично",
+  fulfilled: "Исполнено",
+};
+
+const includesText = (value, query) => String(value || "").toLowerCase().includes(query);
 
 export default function RequestDetailsPage() {
   const { id } = useParams();
@@ -26,6 +54,10 @@ export default function RequestDetailsPage() {
   const [priorityComment, setPriorityComment] = useState("");
   const [assigneeId, setAssigneeId] = useState("");
   const [assignComment, setAssignComment] = useState("");
+  const [statusSearch, setStatusSearch] = useState("");
+  const [assigneeSearch, setAssigneeSearch] = useState("");
+  const [itemDrafts, setItemDrafts] = useState({});
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -35,6 +67,18 @@ export default function RequestDetailsPage() {
 
   const selectedAssignee = useMemo(() => assignableUsers.find((user) => user.id === assigneeId) || null, [assignableUsers, assigneeId]);
 
+  const filteredStatuses = useMemo(() => {
+    const text = statusSearch.trim().toLowerCase();
+    return Object.entries(REQUEST_STATUS_LABELS).filter(([value, label]) => !text || includesText(value, text) || includesText(label, text));
+  }, [statusSearch]);
+
+  const filteredAssignees = useMemo(() => {
+    const text = assigneeSearch.trim().toLowerCase();
+    return assignableUsers.filter((user) => (
+      !text || [user.username, user.email, user.full_name, getRoleLabel(user.role)].some((value) => includesText(value, text))
+    ));
+  }, [assignableUsers, assigneeSearch]);
+
   useEffect(() => {
     loadAll();
   }, [id]);
@@ -43,6 +87,17 @@ export default function RequestDetailsPage() {
     setNewStatus(data.status || "in_review");
     setNewPriority(data.priority || "medium");
     setAssigneeId(data.current_assignee_id || "");
+    setItemDrafts(Object.fromEntries((data.items || []).map((item) => [item.id, {
+      reserved_quantity: item.reserved_quantity || 0,
+      issued_quantity: item.issued_quantity || 0,
+      shortage_quantity: item.shortage_quantity || 0,
+      line_status: item.line_status || "",
+      shortage_reason: item.shortage_reason || "",
+      replacement_item_name: item.replacement_item_name || "",
+      replacement_status: item.replacement_status || "",
+      allow_analog: Boolean(item.allow_analog),
+      comment: "",
+    }])));
   };
 
   const loadAll = async () => {
@@ -129,6 +184,44 @@ export default function RequestDetailsPage() {
     }
   };
 
+  const handleItemDraftChange = (itemId, field, value) => {
+    setItemDrafts((prev) => ({
+      ...prev,
+      [itemId]: {
+        ...(prev[itemId] || {}),
+        [field]: value,
+      },
+    }));
+  };
+
+  const handleItemWorkflowSubmit = async (event, itemId) => {
+    event.preventDefault();
+    if (!canManageRequest) return;
+    try {
+      setSaving(true);
+      const draft = itemDrafts[itemId] || {};
+      const data = await updateRequestItemWorkflow(id, itemId, {
+        ...draft,
+        reserved_quantity: Number(draft.reserved_quantity || 0),
+        issued_quantity: Number(draft.issued_quantity || 0),
+        shortage_quantity: Number(draft.shortage_quantity || 0),
+      });
+      setRequestData(data);
+      hydrateForm(data);
+    } catch {
+      setError("Не удалось обновить позицию заявки.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const renderField = (label, value) => (
+    <div className="request-field">
+      <span>{label}</span>
+      <strong>{value || "-"}</strong>
+    </div>
+  );
+
   return (
     <Navbar>
       <div className="page">
@@ -137,21 +230,34 @@ export default function RequestDetailsPage() {
 
         {!loading && requestData ? (
           <>
-            <div className="card">
-              <h1>{requestData.number}</h1>
-              <p><strong>Заголовок:</strong> {requestData.title}</p>
-              <p><strong>Статус:</strong> {getRequestStatusLabel(requestData.status)}</p>
-              <p><strong>Тип:</strong> {getRequestTypeLabel(requestData.request_type)}</p>
-              <p><strong>Приоритет:</strong> {getRequestPriorityLabel(requestData.priority)}</p>
-              <p><strong>Автор:</strong> {requestData.created_by_username}</p>
-              <p><strong>Исполнитель:</strong> {requestData.current_assignee_username || "не назначен"}</p>
-              <p><strong>Описание:</strong> {requestData.description || "-"}</p>
-              <p><strong>Оборудование:</strong> {requestData.equipment_name || "-"} {requestData.equipment_model ? `(${requestData.equipment_model})` : ""}</p>
-              <p><strong>Серийный номер:</strong> {requestData.serial_number || "-"}</p>
-              <p><strong>Площадка:</strong> {requestData.site_name || "-"}</p>
+            <div className="card request-hero">
+              <div className="request-title-row">
+                <div>
+                  <h1>{requestData.number}</h1>
+                  <p>{requestData.title}</p>
+                </div>
+                <div className="badge-row">
+                  <span className={`badge badge-${statusTone[requestData.status] || "neutral"}`}>{getRequestStatusLabel(requestData.status)}</span>
+                  <span className={`badge badge-${priorityTone[requestData.priority] || "neutral"}`}>{getRequestPriorityLabel(requestData.priority)}</span>
+                </div>
+              </div>
+
+              <div className="request-meta-grid">
+                {renderField("Тип", getRequestTypeLabel(requestData.request_type))}
+                {renderField("Автор", requestData.created_by_username)}
+                {renderField("Исполнитель", requestData.current_assignee_username || "Не назначен")}
+                {renderField("Площадка", requestData.site_name)}
+                {renderField("Оборудование", `${requestData.equipment_name || "-"}${requestData.equipment_model ? ` / ${requestData.equipment_model}` : ""}`)}
+                {renderField("Серийный номер", requestData.serial_number)}
+              </div>
+
+              <div className="request-description">
+                <span>Описание</span>
+                <p>{requestData.description || "Описание не заполнено."}</p>
+              </div>
             </div>
 
-            <div className="dashboard-grid">
+            <div className="dashboard-grid request-actions-grid">
               <div className="card">
                 <h2>Изменить приоритет</h2>
                 <form onSubmit={handlePrioritySubmit} className="form">
@@ -168,10 +274,11 @@ export default function RequestDetailsPage() {
                   <div className="card">
                     <h2>Сменить статус</h2>
                     <form onSubmit={handleStatusSubmit} className="form">
+                      <input className="select-search" placeholder="Найти статус" value={statusSearch} onChange={(event) => setStatusSearch(event.target.value)} />
                       <select value={newStatus} onChange={(event) => setNewStatus(event.target.value)}>
-                        {Object.entries(REQUEST_STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                        {filteredStatuses.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                       </select>
-                      <textarea placeholder="Комментарий" value={statusComment} onChange={(event) => setStatusComment(event.target.value)} />
+                      <textarea placeholder="Комментарий, причина дефицита или сценарий ожидания" value={statusComment} onChange={(event) => setStatusComment(event.target.value)} />
                       <button type="submit" disabled={saving}>Изменить статус</button>
                     </form>
                   </div>
@@ -179,9 +286,10 @@ export default function RequestDetailsPage() {
                   <div className="card">
                     <h2>Исполнитель</h2>
                     <form onSubmit={handleAssignSubmit} className="form">
+                      <input className="select-search" placeholder="Найти исполнителя" value={assigneeSearch} onChange={(event) => setAssigneeSearch(event.target.value)} />
                       <select value={assigneeId} onChange={(event) => setAssigneeId(event.target.value)}>
                         <option value="">Выбери исполнителя</option>
-                        {assignableUsers.map((user) => <option key={user.id} value={user.id}>{user.username} ({getRoleLabel(user.role)})</option>)}
+                        {filteredAssignees.map((user) => <option key={user.id} value={user.id}>{user.username} ({getRoleLabel(user.role)})</option>)}
                       </select>
                       <textarea placeholder="Комментарий" value={assignComment} onChange={(event) => setAssignComment(event.target.value)} />
                       <button type="submit" disabled={saving}>Назначить</button>
@@ -193,7 +301,78 @@ export default function RequestDetailsPage() {
 
             <div className="card">
               <h2>Позиции</h2>
-              {!requestData.items?.length ? <p>Позиции отсутствуют.</p> : <ul>{requestData.items.map((item) => <li key={item.id}>{item.item_name} - {item.quantity} шт.</li>)}</ul>}
+              {!requestData.items?.length ? <p>Позиции отсутствуют.</p> : (
+                <div className="request-item-list">
+                  {requestData.items.map((item) => (
+                    <div className="request-item-row" key={item.id}>
+                      <div>
+                        <strong>{item.item_name}</strong>
+                        <span>{lineStatusLabels[item.line_status] || item.line_status || "Обычная позиция"}</span>
+                      </div>
+                      <div><span>Запрошено</span><strong>{item.quantity}</strong></div>
+                      <div><span>Резерв</span><strong>{item.reserved_quantity || 0}</strong></div>
+                      <div><span>Выдано</span><strong>{item.issued_quantity || 0}</strong></div>
+                      <div><span>Дефицит</span><strong>{item.shortage_quantity || 0}</strong></div>
+                      {item.shortage_reason || item.replacement_item_name ? (
+                        <p>
+                          {item.shortage_reason ? `Причина: ${item.shortage_reason}` : ""}
+                          {item.shortage_reason && item.replacement_item_name ? " | " : ""}
+                          {item.replacement_item_name ? `Замена: ${item.replacement_item_name}` : ""}
+                        </p>
+                      ) : null}
+                      {canManageRequest ? (
+                        <form className="request-item-workflow" onSubmit={(event) => handleItemWorkflowSubmit(event, item.id)}>
+                          <label>
+                            Статус строки
+                            <select value={itemDrafts[item.id]?.line_status || ""} onChange={(event) => handleItemDraftChange(item.id, "line_status", event.target.value)}>
+                              <option value="">Обычная позиция</option>
+                              <option value="shortage">Дефицит</option>
+                              <option value="waiting">Ожидание</option>
+                              <option value="replacement">Замена</option>
+                              <option value="reallocation">Перераспределение</option>
+                              <option value="partial">Частично</option>
+                              <option value="fulfilled">Исполнено</option>
+                            </select>
+                          </label>
+                          <label>
+                            Резерв
+                            <input type="number" min="0" value={itemDrafts[item.id]?.reserved_quantity ?? 0} onChange={(event) => handleItemDraftChange(item.id, "reserved_quantity", event.target.value)} />
+                          </label>
+                          <label>
+                            Выдано
+                            <input type="number" min="0" value={itemDrafts[item.id]?.issued_quantity ?? 0} onChange={(event) => handleItemDraftChange(item.id, "issued_quantity", event.target.value)} />
+                          </label>
+                          <label>
+                            Дефицит
+                            <input type="number" min="0" value={itemDrafts[item.id]?.shortage_quantity ?? 0} onChange={(event) => handleItemDraftChange(item.id, "shortage_quantity", event.target.value)} />
+                          </label>
+                          <label>
+                            Причина дефицита
+                            <input value={itemDrafts[item.id]?.shortage_reason || ""} onChange={(event) => handleItemDraftChange(item.id, "shortage_reason", event.target.value)} />
+                          </label>
+                          <label>
+                            Аналог / замена
+                            <input value={itemDrafts[item.id]?.replacement_item_name || ""} onChange={(event) => handleItemDraftChange(item.id, "replacement_item_name", event.target.value)} />
+                          </label>
+                          <label>
+                            Статус замены
+                            <input value={itemDrafts[item.id]?.replacement_status || ""} onChange={(event) => handleItemDraftChange(item.id, "replacement_status", event.target.value)} />
+                          </label>
+                          <label className="checkbox request-item-checkbox">
+                            <input type="checkbox" checked={Boolean(itemDrafts[item.id]?.allow_analog)} onChange={(event) => handleItemDraftChange(item.id, "allow_analog", event.target.checked)} />
+                            Можно аналог
+                          </label>
+                          <label className="request-item-comment">
+                            Комментарий к изменению
+                            <input value={itemDrafts[item.id]?.comment || ""} onChange={(event) => handleItemDraftChange(item.id, "comment", event.target.value)} />
+                          </label>
+                          <button type="submit" disabled={saving}>Сохранить строку</button>
+                        </form>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className="card">
@@ -211,9 +390,16 @@ export default function RequestDetailsPage() {
             </div>
 
             <div className="card">
-              <h2>История</h2>
-              {!requestData.events?.length ? <p>История пока пустая.</p> : (
-                <ul className="activity-list">
+              <div className="section-head">
+                <h2>История</h2>
+                <button type="button" className="ghost-button" onClick={() => setHistoryOpen((value) => !value)}>
+                  {historyOpen ? "Скрыть" : `Показать (${requestData.events?.length || 0})`}
+                </button>
+              </div>
+              {!historyOpen ? <p className="field-note">История скрыта, чтобы карточка заявки не превращалась в длинную простыню.</p> : null}
+              {historyOpen && !requestData.events?.length ? <p>История пока пустая.</p> : null}
+              {historyOpen && requestData.events?.length ? (
+                <ul className="activity-list request-history-list">
                   {requestData.events.map((event) => (
                     <li key={event.id}>
                       <strong>{event.event_type}</strong> - {event.actor_username} ({getRoleLabel(event.actor_role)})
@@ -222,7 +408,7 @@ export default function RequestDetailsPage() {
                     </li>
                   ))}
                 </ul>
-              )}
+              ) : null}
             </div>
           </>
         ) : null}

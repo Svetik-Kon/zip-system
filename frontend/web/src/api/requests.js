@@ -34,3 +34,8 @@ export async function changeRequestPriority(requestId, payload) {
   const response = await apiClient.post(`/api/requests/${requestId}/change-priority/`, payload);
   return response.data;
 }
+
+export async function updateRequestItemWorkflow(requestId, itemId, payload) {
+  const response = await apiClient.patch(`/api/requests/${requestId}/items/${itemId}/workflow/`, payload);
+  return response.data;
+}

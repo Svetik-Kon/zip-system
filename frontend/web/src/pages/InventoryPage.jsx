@@ -2,8 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import {
   createBalance,
   createCatalogItem,
-  createContract,
-  createEquipmentUnit,
   createLocation,
   createReservation,
   getBalances,
@@ -12,7 +10,9 @@ import {
   getEquipmentUnits,
   getLocations,
   getReservations,
+  increaseReservation,
   releaseReservation,
+  updateEquipmentUnit,
 } from "../api/inventory";
 import Navbar from "../components/Navbar";
 import { getMe } from "../utils/auth";
@@ -32,6 +32,36 @@ const TRACKING_LABELS = {
   quantity: "Количественный учет",
 };
 
+const CONTRACT_STATUS_LABELS = {
+  active: "активен",
+  expiring: "истекает",
+  expired: "истек",
+  closed: "закрыт",
+};
+
+const todayIso = () => new Date().toLocaleDateString("en-CA");
+
+const isContractBlocked = (contract) => Boolean(contract && (
+  ["expired", "closed"].includes(contract.status)
+  || (contract.ends_at && contract.ends_at < todayIso())
+));
+
+const cleanReservationComment = (value = "") => String(value)
+  .split(/\r?\n/)
+  .filter((line) => (
+    !line.trim().startsWith("Частично снят резерв:")
+    && !line.trim().startsWith("Partially released quantity:")
+  ))
+  .join("\n")
+  .trim();
+
+const inventoryFileUrl = (value) => {
+  if (!value) return "";
+  if (String(value).startsWith("http")) return value;
+  if (String(value).startsWith("/")) return `http://localhost:8003${value}`;
+  return `http://localhost:8003/${value}`;
+};
+
 const CSV_ALIASES = {
   sku: ["sku", "артикул"],
   name: ["name", "наименование", "название"],
@@ -49,13 +79,6 @@ const CSV_ALIASES = {
   customer_name: ["customer_name", "заказчик", "клиент"],
   reserved_until: ["reserved_until", "зарезервировано_до", "до_даты"],
   contract_number: ["contract_number", "договор", "номер_договора"],
-};
-
-const getInventoryFileUrl = (value) => {
-  if (!value) return "";
-  if (String(value).startsWith("http")) return value;
-  if (String(value).startsWith("/")) return `http://localhost:8003${value}`;
-  return `http://localhost:8003/${value}`;
 };
 
 function parseCsvLine(line, delimiter) {
@@ -116,15 +139,9 @@ function matchesText(values, text) {
   return !text || values.some((value) => String(value || "").toLowerCase().includes(text));
 }
 
-function splitSerials(value) {
-  return value
-    .split(/[\n,;]+/)
-    .map((serial) => serial.trim())
-    .filter(Boolean);
-}
-
 export default function InventoryPage() {
   const me = getMe();
+  const canEditInventory = me?.role !== "manager";
   const [items, setItems] = useState([]);
   const [locations, setLocations] = useState([]);
   const [balances, setBalances] = useState([]);
@@ -133,11 +150,12 @@ export default function InventoryPage() {
   const [equipmentUnits, setEquipmentUnits] = useState([]);
   const [filters, setFilters] = useState({ search: "", location: "", available: "" });
   const [activeModal, setActiveModal] = useState("");
+  const [detailOpen, setDetailOpen] = useState(false);
   const [selectedItemId, setSelectedItemId] = useState("");
   const [selectedUnitId, setSelectedUnitId] = useState("");
+  const [serialSearch, setSerialSearch] = useState("");
+  const [reservationSearch, setReservationSearch] = useState("");
   const [locationForm, setLocationForm] = useState({ name: "", location_type: "warehouse", address: "" });
-  const [contractForm, setContractForm] = useState({ customer_name: "", number: "", starts_at: "", ends_at: "", status: "active", file: null, comment: "" });
-  const [receiptForm, setReceiptForm] = useState({ item: "", location: "", quantity: 1, serial_numbers: "", notes: "" });
   const [reserveForm, setReserveForm] = useState({
     reservation_type: "quantity",
     item: "",
@@ -149,10 +167,9 @@ export default function InventoryPage() {
     reserved_until: "",
     contract: "",
     contract_number: "",
-    contract_file: null,
+    is_hard: false,
     comment: "",
   });
-  const [releaseQuantities, setReleaseQuantities] = useState({});
   const [importFile, setImportFile] = useState(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -207,6 +224,11 @@ export default function InventoryPage() {
     return filteredItems.find((item) => item.id === selectedItemId) || filteredItems[0];
   }, [filteredItems, selectedItemId]);
 
+  const getReservationAvailableQuantity = (reservation) => {
+    const balance = selectedItem?.balances.find((entry) => entry.location === reservation.location);
+    return Number(balance?.available_quantity || 0);
+  };
+
   const selectedUnit = useMemo(() => {
     if (!selectedItem?.units.length) return null;
     return selectedItem.units.find((unit) => unit.id === selectedUnitId) || selectedItem.units[0];
@@ -223,8 +245,66 @@ export default function InventoryPage() {
     ));
   }, [reservations, selectedUnit]);
 
+  const filteredSelectedUnits = useMemo(() => {
+    if (!selectedItem) return [];
+    const text = serialSearch.trim().toLowerCase();
+    if (!text) return selectedItem.units;
+    return selectedItem.units.filter((unit) => [
+      unit.serial_number,
+      unit.inventory_number,
+      unit.location_name,
+      unit.customer_name,
+      unit.contract_number,
+      unit.responsible_person,
+      UNIT_STATUSES[unit.status],
+    ].some((value) => String(value || "").toLowerCase().includes(text)));
+  }, [selectedItem, serialSearch]);
+
+  const filteredSelectedReservations = useMemo(() => {
+    if (!selectedItem) return [];
+    const text = reservationSearch.trim().toLowerCase();
+    if (!text) return selectedItem.reservations;
+    return selectedItem.reservations.filter((reservation) => [
+      reservation.customer_name,
+      reservation.contract_display,
+      reservation.contract_number,
+      reservation.location_name,
+      reservation.reserved_until,
+      reservation.comment,
+      reservation.equipment_unit_serials?.join(" "),
+      reservation.quantity,
+    ].some((value) => String(value || "").toLowerCase().includes(text)));
+  }, [selectedItem, reservationSearch]);
+
+  const unitHardReserved = (unit) => selectedItem?.reservations.some((reservation) => (
+    reservation.is_hard
+    && (
+      reservation.equipment_units?.includes(unit.id)
+      || reservation.equipment_unit_serials?.includes(unit.serial_number)
+    )
+  ));
+
+  const contractsById = useMemo(() => new Map(contracts.map((contract) => [contract.id, contract])), [contracts]);
+  const contractFileLink = (contractId) => inventoryFileUrl(contractsById.get(contractId)?.file);
+  const reservationHasBlockedContract = (reservation) => {
+    const contract = contractsById.get(reservation.contract);
+    return isContractBlocked(contract) || ["expired", "closed"].includes(reservation.contract_status) || (
+      reservation.contract_ends_at && reservation.contract_ends_at < todayIso()
+    );
+  };
+
+  const handleContractSelect = (contractId) => {
+    const contract = contractsById.get(contractId);
+    setReserveForm((prev) => ({
+      ...prev,
+      contract: contractId,
+      customer_name: contract?.customer_name || prev.customer_name,
+      contract_number: contract ? "" : prev.contract_number,
+    }));
+  };
+
   const availableUnits = useMemo(() => equipmentUnits.filter((unit) => (
-    unit.status === "available"
+    ["available", "needs_check"].includes(unit.status)
     && (!reserveForm.item || unit.item === reserveForm.item)
     && (!reserveForm.location || unit.location === reserveForm.location)
   )), [equipmentUnits, reserveForm.item, reserveForm.location]);
@@ -264,66 +344,10 @@ export default function InventoryPage() {
 
   const closeModal = () => setActiveModal("");
 
-  const currentBalance = (itemId, locationId) => balances.find((balance) => balance.item === itemId && balance.location === locationId);
-
   const handleLocationSubmit = async (event) => {
     event.preventDefault();
-    await createLocation({ ...locationForm, organization_id: me?.organization_id || null });
+    await createLocation({ ...locationForm, organization_id: me?.organization || null });
     setLocationForm({ name: "", location_type: "warehouse", address: "" });
-    closeModal();
-    await loadAll();
-  };
-
-  const handleContractSubmit = async (event) => {
-    event.preventDefault();
-    const formData = new FormData();
-    formData.append("customer_name", contractForm.customer_name);
-    formData.append("number", contractForm.number);
-    formData.append("status", contractForm.status);
-    appendIfValue(formData, "organization_id", me?.organization_id || "");
-    appendIfValue(formData, "starts_at", contractForm.starts_at);
-    appendIfValue(formData, "ends_at", contractForm.ends_at);
-    appendIfValue(formData, "file", contractForm.file);
-    appendIfValue(formData, "comment", contractForm.comment);
-    await createContract(formData);
-    setContractForm({ customer_name: "", number: "", starts_at: "", ends_at: "", status: "active", file: null, comment: "" });
-    event.target.reset();
-    closeModal();
-    await loadAll();
-  };
-
-  const handleReceiptSubmit = async (event) => {
-    event.preventDefault();
-    const item = items.find((entry) => entry.id === receiptForm.item);
-    if (!item) return;
-
-    if (item.tracking_type === "serial") {
-      const serials = splitSerials(receiptForm.serial_numbers);
-      if (!serials.length) {
-        setError("Для серийной позиции укажи хотя бы один серийный номер.");
-        return;
-      }
-
-      for (const serial of serials) {
-        await createEquipmentUnit({
-          item: receiptForm.item,
-          location: receiptForm.location,
-          serial_number: serial,
-          inventory_number: "",
-          notes: receiptForm.notes,
-        });
-      }
-    } else {
-      const existing = currentBalance(receiptForm.item, receiptForm.location);
-      await createBalance({
-        item: receiptForm.item,
-        location: receiptForm.location,
-        on_hand_quantity: Number(existing?.on_hand_quantity || 0) + Number(receiptForm.quantity || 0),
-        reserved_quantity: Number(existing?.reserved_quantity || 0),
-      });
-    }
-
-    setReceiptForm({ item: "", location: "", quantity: 1, serial_numbers: "", notes: "" });
     closeModal();
     await loadAll();
   };
@@ -344,7 +368,7 @@ export default function InventoryPage() {
     appendIfValue(formData, "reserved_until", data.reserved_until);
     appendIfValue(formData, "contract", data.contract);
     appendIfValue(formData, "contract_number", data.contract_number);
-    appendIfValue(formData, "contract_file", data.contract_file);
+    formData.append("is_hard", data.is_hard ? "true" : "false");
     appendIfValue(formData, "comment", data.comment);
     return formData;
   };
@@ -363,7 +387,7 @@ export default function InventoryPage() {
       reserved_until: "",
       contract: "",
       contract_number: "",
-      contract_file: null,
+      is_hard: false,
       comment: "",
     });
     event.target.reset();
@@ -381,17 +405,56 @@ export default function InventoryPage() {
       status,
       quantity,
       comment: quantity
-        ? `Частично снят резерв: ${quantity} шт.`
+        ? ""
         : status === "expired" ? "Резерв снят из-за окончания срока/договора." : "Резерв снят вручную.",
     });
-    setReleaseQuantities((prev) => ({ ...prev, [reservation.id]: "" }));
     setMessage(quantity ? "Резерв уменьшен, доступность пересчитана." : "Резерв снят, доступность пересчитана.");
     await loadAll();
   };
 
-  const openReceiptForItem = (item = selectedItem) => {
-    setReceiptForm({ item: item?.id || "", location: "", quantity: 1, serial_numbers: "", notes: "" });
-    setActiveModal("receipt");
+  const handleIncreaseReservation = async (reservation, quantity, confirm = true) => {
+    if (!quantity) return;
+    const available = getReservationAvailableQuantity(reservation);
+    if (quantity > available) {
+      setError(`Можно добавить не больше ${available} шт. свободного остатка на этой локации.`);
+      return;
+    }
+    if (confirm && !window.confirm(`Точно увеличить резерв на ${quantity} шт.?`)) return;
+    await increaseReservation(reservation.id, { quantity });
+    setMessage("Резерв увеличен, доступность пересчитана.");
+    await loadAll();
+  };
+
+  const handleStepReservation = async (reservation, delta) => {
+    if (delta > 0) {
+      await handleIncreaseReservation(reservation, 1, false);
+      return;
+    }
+
+    if (reservation.quantity <= 1) {
+      if (!window.confirm("Количество станет 0. Точно убрать резерв полностью?")) return;
+      await releaseReservation(reservation.id, { status: "released" });
+      setMessage("Резерв снят, доступность пересчитана.");
+      await loadAll();
+      return;
+    }
+
+    await releaseReservation(reservation.id, { status: "released", quantity: 1, comment: "" });
+    setMessage("Резерв уменьшен, доступность пересчитана.");
+    await loadAll();
+  };
+
+  const handleReturnUnitToAvailable = async (unit) => {
+    if (!window.confirm(`Вернуть серийник ${unit.serial_number} в свободные остатки?`)) return;
+    await updateEquipmentUnit(unit.id, {
+      status: "available",
+      customer_name: "",
+      contract: null,
+      responsible_person: "",
+      reserved_until: null,
+    });
+    setMessage("Оборудование возвращено в свободные остатки.");
+    await loadAll();
   };
 
   const openReserveForItem = (item = selectedItem) => {
@@ -407,7 +470,7 @@ export default function InventoryPage() {
       reserved_until: "",
       contract: "",
       contract_number: "",
-      contract_file: null,
+      is_hard: item?.tracking_type === "serial",
       comment: "",
     });
     setActiveModal("reserve");
@@ -425,7 +488,7 @@ export default function InventoryPage() {
       reserved_until: "",
       contract: "",
       contract_number: "",
-      contract_file: null,
+      is_hard: true,
       comment: "",
     });
     setActiveModal("reserve");
@@ -479,7 +542,7 @@ export default function InventoryPage() {
         let location = locationMap.get(locationName.toLowerCase());
         if (!location) {
           location = await createLocation({
-            organization_id: me?.organization_id || null,
+            organization_id: me?.organization || null,
             name: locationName,
             location_type: field(row, "location_type") || "warehouse",
             address: field(row, "address"),
@@ -521,15 +584,16 @@ export default function InventoryPage() {
 
   const itemOptions = items.map((item) => <option key={item.id} value={item.id}>{item.sku} - {item.name}</option>);
   const locationOptions = locations.map((location) => <option key={location.id} value={location.id}>{location.name}</option>);
-  const contractOptions = contracts.map((contract) => <option key={contract.id} value={contract.id}>{contract.customer_name} / {contract.number}</option>);
-  const receiptItem = items.find((item) => item.id === receiptForm.item);
-
+  const reserveItem = items.find((item) => item.id === reserveForm.item);
+  const contractOptions = contracts.map((contract) => (
+    <option key={contract.id} value={contract.id} disabled={isContractBlocked(contract)}>
+      {contract.customer_name} / {contract.number} ({CONTRACT_STATUS_LABELS[contract.status] || contract.status})
+    </option>
+  ));
   const renderModal = () => {
-    if (!activeModal) return null;
+    if (!activeModal || !canEditInventory) return null;
     const titles = {
       location: "Новая локация",
-      contract: "Новый договор",
-      receipt: "Приход на склад",
       reserve: "Создать резерв",
       import: "Импорт CSV",
     };
@@ -557,48 +621,28 @@ export default function InventoryPage() {
             </form>
           ) : null}
 
-          {activeModal === "contract" ? (
-            <form className="form" onSubmit={handleContractSubmit}>
-              <input placeholder="Заказчик" value={contractForm.customer_name} onChange={(event) => setContractForm((prev) => ({ ...prev, customer_name: event.target.value }))} required />
-              <input placeholder="Номер договора" value={contractForm.number} onChange={(event) => setContractForm((prev) => ({ ...prev, number: event.target.value }))} required />
-              <label>Начало<input type="date" value={contractForm.starts_at} onChange={(event) => setContractForm((prev) => ({ ...prev, starts_at: event.target.value }))} /></label>
-              <label>Окончание<input type="date" value={contractForm.ends_at} onChange={(event) => setContractForm((prev) => ({ ...prev, ends_at: event.target.value }))} /></label>
-              <select value={contractForm.status} onChange={(event) => setContractForm((prev) => ({ ...prev, status: event.target.value }))}>
-                <option value="active">Активен</option>
-                <option value="expiring">Истекает</option>
-                <option value="expired">Истек</option>
-                <option value="closed">Закрыт</option>
-              </select>
-              <label>Файл договора<input type="file" onChange={(event) => setContractForm((prev) => ({ ...prev, file: event.target.files?.[0] || null }))} /></label>
-              <textarea placeholder="Комментарий" value={contractForm.comment} onChange={(event) => setContractForm((prev) => ({ ...prev, comment: event.target.value }))} />
-              <button type="submit">Сохранить договор</button>
-            </form>
-          ) : null}
-
-          {activeModal === "receipt" ? (
-            <form className="form" onSubmit={handleReceiptSubmit}>
-              <select value={receiptForm.item} onChange={(event) => setReceiptForm((prev) => ({ ...prev, item: event.target.value, serial_numbers: "" }))} required><option value="">Позиция</option>{itemOptions}</select>
-              <select value={receiptForm.location} onChange={(event) => setReceiptForm((prev) => ({ ...prev, location: event.target.value }))} required><option value="">Локация</option>{locationOptions}</select>
-              {receiptItem?.tracking_type === "serial" ? (
-                <label>
-                  Серийные номера
-                  <textarea placeholder="Каждый серийный номер с новой строки" value={receiptForm.serial_numbers} onChange={(event) => setReceiptForm((prev) => ({ ...prev, serial_numbers: event.target.value }))} required />
-                </label>
-              ) : (
-                <label>Количество<input type="number" min="1" value={receiptForm.quantity} onChange={(event) => setReceiptForm((prev) => ({ ...prev, quantity: event.target.value }))} /></label>
-              )}
-              <textarea placeholder="Примечание к приходу" value={receiptForm.notes} onChange={(event) => setReceiptForm((prev) => ({ ...prev, notes: event.target.value }))} />
-              <button type="submit">Принять на склад</button>
-            </form>
-          ) : null}
-
           {activeModal === "reserve" ? (
             <form className="form" onSubmit={handleReserveSubmit}>
-              <select value={reserveForm.reservation_type} onChange={(event) => setReserveForm((prev) => ({ ...prev, reservation_type: event.target.value, equipment_units: [] }))}>
-                <option value="quantity">По количеству</option>
-                <option value="serial">По серийным номерам</option>
+              <div className="field-note">
+                {reserveItem?.tracking_type === "serial"
+                  ? "Для серийной позиции резервируется конкретный серийный номер."
+                  : "Для количественной позиции резервируется количество."}
+              </div>
+              <select
+                value={reserveForm.item}
+                onChange={(event) => {
+                  const item = items.find((entry) => entry.id === event.target.value);
+                  setReserveForm((prev) => ({
+                    ...prev,
+                    item: event.target.value,
+                    reservation_type: item?.tracking_type === "serial" ? "serial" : "quantity",
+                    equipment_units: [],
+                  }));
+                }}
+                required
+              >
+                <option value="">Позиция</option>{itemOptions}
               </select>
-              <select value={reserveForm.item} onChange={(event) => setReserveForm((prev) => ({ ...prev, item: event.target.value, equipment_units: [] }))} required><option value="">Позиция</option>{itemOptions}</select>
               <select value={reserveForm.location} onChange={(event) => setReserveForm((prev) => ({ ...prev, location: event.target.value, equipment_units: [] }))} required><option value="">Локация</option>{locationOptions}</select>
               {reserveForm.reservation_type === "serial" ? (
                 <label>
@@ -610,10 +654,17 @@ export default function InventoryPage() {
               ) : (
                 <label>Количество<input type="number" min="1" value={reserveForm.quantity} onChange={(event) => setReserveForm((prev) => ({ ...prev, quantity: event.target.value }))} /></label>
               )}
-              <select value={reserveForm.contract} onChange={(event) => setReserveForm((prev) => ({ ...prev, contract: event.target.value }))}><option value="">Договор</option>{contractOptions}</select>
+              <select value={reserveForm.contract} onChange={(event) => handleContractSelect(event.target.value)}><option value="">Договор</option>{contractOptions}</select>
+              {contractFileLink(reserveForm.contract) ? (
+                <a className="button-link secondary" href={contractFileLink(reserveForm.contract)} target="_blank" rel="noreferrer">Открыть файл договора</a>
+              ) : null}
               <input placeholder="Заказчик" value={reserveForm.customer_name} onChange={(event) => setReserveForm((prev) => ({ ...prev, customer_name: event.target.value }))} />
               <label>Зарезервировано до<input type="date" value={reserveForm.reserved_until} onChange={(event) => setReserveForm((prev) => ({ ...prev, reserved_until: event.target.value }))} /></label>
               <input placeholder="Номер договора, если нет в справочнике" value={reserveForm.contract_number} onChange={(event) => setReserveForm((prev) => ({ ...prev, contract_number: event.target.value }))} />
+              <label className="checkbox">
+                <input type="checkbox" checked={reserveForm.is_hard} onChange={(event) => setReserveForm((prev) => ({ ...prev, is_hard: event.target.checked }))} />
+                Жестко закрепить: нельзя выдать другому заказчику или договору
+              </label>
               <input placeholder="UUID заявки" value={reserveForm.request_id} onChange={(event) => setReserveForm((prev) => ({ ...prev, request_id: event.target.value }))} />
               <textarea placeholder="Комментарий" value={reserveForm.comment} onChange={(event) => setReserveForm((prev) => ({ ...prev, comment: event.target.value }))} />
               <button type="submit">Зарезервировать</button>
@@ -637,13 +688,13 @@ export default function InventoryPage() {
       <div className="page">
         <div className="page-header">
           <h1>Склад</h1>
-          <div className="compact-actions">
-            <button type="button" onClick={() => openReceiptForItem()}>Приход</button>
-            <button type="button" onClick={() => openReserveForItem()}>Резерв</button>
-            <button type="button" onClick={() => setActiveModal("location")}>Локация</button>
-            <button type="button" onClick={() => setActiveModal("contract")}>Договор</button>
-            <button type="button" className="ghost-button" onClick={() => setActiveModal("import")}>CSV</button>
-          </div>
+          {canEditInventory ? (
+            <div className="compact-actions">
+              <button type="button" onClick={() => openReserveForItem()}>Резерв</button>
+              <button type="button" onClick={() => setActiveModal("location")}>Локация</button>
+              <button type="button" className="ghost-button" onClick={() => setActiveModal("import")}>CSV</button>
+            </div>
+          ) : null}
         </div>
 
         {error ? <div className="error">{error}</div> : null}
@@ -674,6 +725,7 @@ export default function InventoryPage() {
             <div className="item-register-head">
               <span title="Артикул позиции в каталоге ЗИП.">SKU</span>
               <span title="Название позиции из каталога.">Позиция</span>
+              <span title="Модель оборудования или комплектующей, если она заведена в каталоге.">Модель</span>
               <span title="Серийный учет: каждая единица ведется по серийному номеру. Количественный учет: учитывается только количество.">Тип учета</span>
               <span title="Физически находится на складах и локациях.">Всего</span>
               <span title="Закреплено за заявками, заказчиками или договорами и недоступно для выдачи другим.">Резерв</span>
@@ -688,10 +740,14 @@ export default function InventoryPage() {
                   onClick={() => {
                     setSelectedItemId(item.id);
                     setSelectedUnitId("");
+                    setSerialSearch("");
+                    setReservationSearch("");
+                    setDetailOpen(true);
                   }}
                 >
                   <span className="row-serial">{item.sku}</span>
                   <span>{item.name}</span>
+                  <span>{item.equipment_model_name || "-"}</span>
                   <span>{TRACKING_LABELS[item.tracking_type] || item.tracking_type}</span>
                   <span>{item.onHand}</span>
                   <span>{item.reserved}</span>
@@ -702,9 +758,15 @@ export default function InventoryPage() {
             {!filteredItems.length ? <p>Позиции не найдены.</p> : null}
           </section>
 
-          <aside className="card equipment-detail">
+          {detailOpen ? (
+            <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setDetailOpen(false)}>
+          <aside className="card equipment-detail equipment-detail-modal" role="dialog" aria-modal="true" aria-label="Карточка позиции">
             {selectedItem ? (
               <>
+                <div className="modal-header">
+                  <h2>Карточка позиции</h2>
+                  <button className="ghost-button" type="button" onClick={() => setDetailOpen(false)}>Закрыть</button>
+                </div>
                 <div className="equipment-card-head">
                   <div>
                     <strong>{selectedItem.sku}</strong>
@@ -719,10 +781,11 @@ export default function InventoryPage() {
                   <div><dt>Всего</dt><dd>{selectedItem.onHand}</dd></div>
                   <div><dt>Резерв</dt><dd>{selectedItem.reserved}</dd></div>
                 </dl>
-                <div className="detail-actions">
-                  <button type="button" onClick={() => openReceiptForItem(selectedItem)}>Принять</button>
-                  <button type="button" className="ghost-button" onClick={() => openReserveForItem(selectedItem)}>Зарезервировать</button>
-                </div>
+                {canEditInventory ? (
+                  <div className="detail-actions">
+                    <button type="button" className="ghost-button" onClick={() => openReserveForItem(selectedItem)}>Зарезервировать</button>
+                  </div>
+                ) : null}
 
                 <div className="detail-section">
                   <h3>Локации</h3>
@@ -738,20 +801,30 @@ export default function InventoryPage() {
                 {selectedItem.tracking_type === "serial" ? (
                   <div className="detail-section">
                     <h3>Серийные номера</h3>
+                    <input
+                      className="detail-search"
+                      value={serialSearch}
+                      onChange={(event) => setSerialSearch(event.target.value)}
+                      placeholder="Поиск по серийному номеру, локации, статусу, заказчику или договору"
+                    />
                     <div className="serial-list">
-                      {selectedItem.units.map((unit) => (
+                      {filteredSelectedUnits.map((unit) => (
                         <button
                           className={`serial-row ${selectedUnit?.id === unit.id ? "active" : ""}`}
                           key={unit.id}
                           type="button"
                           onClick={() => setSelectedUnitId(unit.id)}
                         >
-                          <span>{unit.serial_number}</span>
-                          <mark className={`status-badge status-${unit.status}`}>{UNIT_STATUSES[unit.status] || unit.status}</mark>
+                          <span>
+                            {unitHardReserved(unit) ? <span className="lock-indicator" title="Жестко закреплено под заказчика/договор">●</span> : null}
+                            {unit.serial_number}
+                          </span>
+                          <mark className={`status-badge status-${unit.status}`}>{unitHardReserved(unit) ? "Закреплено" : UNIT_STATUSES[unit.status] || unit.status}</mark>
                         </button>
                       ))}
                     </div>
                     {!selectedItem.units.length ? <p className="field-note">Серийные карточки еще не заведены.</p> : null}
+                    {selectedItem.units.length && !filteredSelectedUnits.length ? <p className="field-note">Серийники не найдены.</p> : null}
                   </div>
                 ) : null}
 
@@ -762,69 +835,116 @@ export default function InventoryPage() {
                       <div><dt>Локация</dt><dd>{selectedUnit.location_name || "-"}</dd></div>
                       <div><dt>Статус</dt><dd>{UNIT_STATUSES[selectedUnit.status] || selectedUnit.status}</dd></div>
                       <div><dt>Заказчик</dt><dd>{selectedUnit.customer_name || "-"}</dd></div>
-                      <div><dt>Договор</dt><dd>{selectedUnit.contract_number || "-"}</dd></div>
+                      <div>
+                        <dt>Договор</dt>
+                        <dd>
+                          {selectedUnit.contract_number || "-"}
+                          {contractFileLink(selectedUnit.contract) ? (
+                            <>
+                              <br />
+                              <a href={contractFileLink(selectedUnit.contract)} target="_blank" rel="noreferrer">Открыть файл</a>
+                            </>
+                          ) : null}
+                        </dd>
+                      </div>
                       <div><dt>До</dt><dd>{selectedUnit.reserved_until || "-"}</dd></div>
                       <div><dt>Ответственный</dt><dd>{selectedUnit.responsible_person || "-"}</dd></div>
                     </dl>
                     <div className="detail-actions">
-                      {selectedUnit.status === "available" ? <button type="button" onClick={() => openReserveForUnit(selectedUnit)}>Зарезервировать этот серийник</button> : null}
+                      {canEditInventory && selectedUnit.status === "available" ? <button type="button" onClick={() => openReserveForUnit(selectedUnit)}>Зарезервировать этот серийник</button> : null}
+                      {canEditInventory && selectedUnit.status === "needs_check" ? (
+                        <>
+                          <button type="button" onClick={() => handleReturnUnitToAvailable(selectedUnit)}>Вернуть в свободные</button>
+                          <button type="button" className="ghost-button" onClick={() => openReserveForUnit(selectedUnit)}>Вернуть в резерв</button>
+                        </>
+                      ) : null}
                       {selectedUnitReservations.map((reservation) => (
-                        <button key={reservation.id} type="button" className="ghost-button" onClick={() => handleReleaseReservation(reservation)}>
-                          Снять резерв
-                        </button>
+                        <div className="linked-reservation" key={reservation.id}>
+                          <h3>Резерв серийника</h3>
+                          <p>{reservation.customer_name || "Заказчик не указан"} · {reservation.contract_display || reservation.contract_number || "Договор не указан"} · до {reservation.reserved_until || "-"}</p>
+                          {reservationHasBlockedContract(reservation) ? (
+                            <p className="reservation-warning">Договор истек или закрыт: резерв нужно отозвать, продлить или перенести.</p>
+                          ) : null}
+                          {cleanReservationComment(reservation.comment) ? <p className="reservation-comment">{cleanReservationComment(reservation.comment)}</p> : null}
+                          {canEditInventory ? <button type="button" className="ghost-button" onClick={() => handleReleaseReservation(reservation)}>
+                            Снять резерв
+                          </button> : null}
+                        </div>
                       ))}
                     </div>
                   </div>
                 ) : null}
 
+                {selectedItem.tracking_type === "quantity" ? (
                 <div className="detail-section">
                   <h3>Активные резервы</h3>
-                  {selectedItem.reservations.map((reservation) => (
+                  <input
+                    className="detail-search"
+                    value={reservationSearch}
+                    onChange={(event) => setReservationSearch(event.target.value)}
+                    placeholder="Поиск по резервам: заказчик, договор, локация, комментарий"
+                  />
+                  {filteredSelectedReservations.map((reservation) => (
                     <div className="reservation-detail-row" key={reservation.id}>
                       <div className="reservation-main">
                         <strong>{reservation.customer_name || "Заказчик не указан"}</strong>
-                        <small>{reservation.contract_display || reservation.contract_number || "Договор не указан"}</small>
+                        <small>
+                          {reservation.contract_display || reservation.contract_number || "Договор не указан"}
+                          {contractFileLink(reservation.contract) ? (
+                            <>
+                              {" · "}
+                              <a href={contractFileLink(reservation.contract)} target="_blank" rel="noreferrer">файл</a>
+                            </>
+                          ) : null}
+                        </small>
                         <span className="reservation-meta">
                           {reservation.equipment_unit_serials?.join(", ") || `${reservation.quantity} шт.`}
                           <br />
                           до {reservation.reserved_until || "-"}
                         </span>
+                        {cleanReservationComment(reservation.comment) ? (
+                          <p className="reservation-comment">{cleanReservationComment(reservation.comment)}</p>
+                        ) : null}
+                        {reservationHasBlockedContract(reservation) ? (
+                          <p className="reservation-warning">Договор истек или закрыт: резерв нужно отозвать, продлить или перенести.</p>
+                        ) : null}
                       </div>
-                      <div className="reservation-controls">
+                      {canEditInventory ? <div className="reservation-controls">
                         {reservation.reservation_type === "quantity" ? (
-                          <div className="reservation-reduce">
-                            <input
-                              min="1"
-                              max={reservation.quantity}
-                              placeholder="Снять шт."
-                              type="number"
-                              value={releaseQuantities[reservation.id] || ""}
-                              onChange={(event) => setReleaseQuantities((prev) => ({ ...prev, [reservation.id]: event.target.value }))}
-                            />
-                            <button
-                              className="ghost-button"
-                              disabled={!releaseQuantities[reservation.id]}
-                              type="button"
-                              onClick={() => handleReleaseReservation(reservation, "released", Number(releaseQuantities[reservation.id]))}
-                            >
-                              Уменьшить
+                          <div className="reservation-stepper" aria-label="Количество под резерв">
+                            <span>Кол-во под резерв</span>
+                            <button type="button" title="Уменьшить резерв" onClick={() => handleStepReservation(reservation, -1)}>
+                              -
                             </button>
+                            <strong>{reservation.quantity}</strong>
+                            <button
+                              type="button"
+                              title="Увеличить резерв"
+                              disabled={getReservationAvailableQuantity(reservation) < 1}
+                              onClick={() => handleStepReservation(reservation, 1)}
+                            >
+                              +
+                            </button>
+                            <small>свободно {getReservationAvailableQuantity(reservation)} шт.</small>
                           </div>
                         ) : null}
                         <div className="reservation-actions">
-                          <button type="button" onClick={() => handleReleaseReservation(reservation)}>Снять все</button>
                           <button type="button" className="ghost-button" onClick={() => handleReleaseReservation(reservation, "expired")}>Истек</button>
                         </div>
-                      </div>
+                      </div> : null}
                     </div>
                   ))}
                   {!selectedItem.reservations.length ? <p className="field-note">Активных резервов по позиции нет.</p> : null}
+                  {selectedItem.reservations.length && !filteredSelectedReservations.length ? <p className="field-note">Резервы не найдены.</p> : null}
                 </div>
+                ) : null}
               </>
             ) : (
               <p>Выбери позицию из реестра.</p>
             )}
           </aside>
+            </div>
+          ) : null}
         </div>
 
         {renderModal()}

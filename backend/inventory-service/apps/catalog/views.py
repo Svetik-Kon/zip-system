@@ -1,6 +1,7 @@
 from django.db import transaction
 from django.db.models import ProtectedError
 from django.db.models import Q
+from django.utils import timezone
 from django.http import JsonResponse
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
@@ -11,7 +12,7 @@ from apps.balances.models import InventoryBalance
 from apps.locations.models import StorageLocation
 from apps.reservations.models import InventoryReservation, ReservationStatus
 from apps.transactions.models import InventoryTransaction
-from .models import CustomerContract, EquipmentComponent, EquipmentModel, EquipmentUnit, EquipmentUnitStatus, InventoryItem
+from .models import ContractStatus, CustomerContract, EquipmentComponent, EquipmentModel, EquipmentUnit, EquipmentUnitStatus, InventoryItem
 from .serializers import (
     CustomerContractSerializer,
     EquipmentUnitSerializer,
@@ -38,7 +39,7 @@ class IsInternalOrReadOnly(permissions.BasePermission):
         return bool(
             request.user
             and request.user.is_authenticated
-            and request.user.role in {"admin", "manager", "warehouse", "engineer", "procurement"}
+            and request.user.role in {"admin", "warehouse", "engineer", "procurement"}
         )
 
 
@@ -103,15 +104,29 @@ class CustomerContractListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsInternalOrReadOnly]
 
     def get_queryset(self):
+        CustomerContract.objects.filter(
+            ends_at__lt=timezone.localdate(),
+            status__in=[ContractStatus.ACTIVE, ContractStatus.EXPIRING],
+        ).update(status=ContractStatus.EXPIRED)
+
         qs = CustomerContract.objects.all()
         search = self.request.query_params.get("search")
         status_value = self.request.query_params.get("status")
+        organization_id = self.request.query_params.get("organization_id")
 
         if search:
             qs = qs.filter(Q(customer_name__icontains=search) | Q(number__icontains=search))
         if status_value:
             qs = qs.filter(status=status_value)
+        if organization_id:
+            qs = qs.filter(organization_id=organization_id)
         return qs
+
+
+class CustomerContractDetailView(generics.RetrieveUpdateAPIView):
+    queryset = CustomerContract.objects.all()
+    serializer_class = CustomerContractSerializer
+    permission_classes = [IsInternalOrReadOnly]
 
 
 class EquipmentUnitListCreateView(generics.ListCreateAPIView):
@@ -246,14 +261,7 @@ class InventoryReservationReleaseView(APIView):
 
             if is_partial_release:
                 reservation.quantity -= release_quantity
-                reservation.comment = "\n".join(
-                    value for value in [
-                        reservation.comment,
-                        request.data.get("comment", "").strip() or f"Partially released quantity: {release_quantity}.",
-                    ]
-                    if value
-                )
-                reservation.save(update_fields=["quantity", "comment", "updated_at"])
+                reservation.save(update_fields=["quantity", "updated_at"])
             elif units:
                 EquipmentUnit.objects.filter(id__in=[unit.id for unit in units]).update(
                     status=EquipmentUnitStatus.AVAILABLE,
@@ -268,6 +276,47 @@ class InventoryReservationReleaseView(APIView):
                     value for value in [reservation.comment, request.data.get("comment", "").strip()] if value
                 )
                 reservation.save(update_fields=["status", "comment", "updated_at"])
+
+        serializer = InventoryReservationSerializer(reservation, context={"request": request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class InventoryReservationIncreaseView(APIView):
+    permission_classes = [IsInternalOrReadOnly]
+
+    def post(self, request, pk):
+        requested_quantity = request.data.get("quantity")
+        try:
+            increase_quantity = int(requested_quantity)
+        except (TypeError, ValueError):
+            return Response({"quantity": "Quantity must be a positive integer."}, status=400)
+        if increase_quantity < 1:
+            return Response({"quantity": "Quantity must be a positive integer."}, status=400)
+
+        with transaction.atomic():
+            reservation = (
+                InventoryReservation.objects.select_for_update()
+                .select_related("item", "location")
+                .prefetch_related("equipment_units")
+                .get(pk=pk)
+            )
+            if reservation.status != ReservationStatus.ACTIVE:
+                return Response({"status": "Only active reservations can be increased."}, status=400)
+            if reservation.equipment_units.exists() or reservation.reservation_type != "quantity":
+                return Response({"reservation": "Only quantity reservations can be increased."}, status=400)
+
+            balance, _ = InventoryBalance.objects.select_for_update().get_or_create(
+                item=reservation.item,
+                location=reservation.location,
+                defaults={"on_hand_quantity": 0, "reserved_quantity": 0},
+            )
+            if balance.available_quantity < increase_quantity:
+                return Response({"quantity": "Quantity cannot exceed available stock."}, status=400)
+
+            balance.reserved_quantity += increase_quantity
+            balance.save(update_fields=["reserved_quantity", "updated_at"])
+            reservation.quantity += increase_quantity
+            reservation.save(update_fields=["quantity", "updated_at"])
 
         serializer = InventoryReservationSerializer(reservation, context={"request": request})
         return Response(serializer.data, status=status.HTTP_200_OK)

@@ -1,9 +1,19 @@
 import { useEffect, useState } from "react";
 import { createCatalogItem, deleteCatalogItem, getCatalogItems } from "../api/inventory";
 import Navbar from "../components/Navbar";
+import { getMe } from "../utils/auth";
 import { ITEM_TYPE_LABELS, getItemTypeLabel } from "../utils/dictionaries";
 
+const TRACKING_TYPE_LABELS = {
+  quantity: "Количественный учет",
+  serial: "Серийный учет",
+};
+
+const defaultTrackingType = (itemType) => (itemType === "equipment" ? "serial" : "quantity");
+
 export default function CatalogPage() {
+  const me = getMe();
+  const canEditCatalog = me?.role !== "manager";
   const [items, setItems] = useState([]);
   const [form, setForm] = useState({
     sku: "",
@@ -12,6 +22,7 @@ export default function CatalogPage() {
     manufacturer: "",
     unit: "шт.",
     item_type: "spare_part",
+    tracking_type: "quantity",
   });
   const [filters, setFilters] = useState({ search: "", item_type: "" });
   const [error, setError] = useState("");
@@ -45,12 +56,17 @@ export default function CatalogPage() {
       manufacturer: "",
       unit: "шт.",
       item_type: "spare_part",
+      tracking_type: "quantity",
     });
   };
 
   const handleChange = (event) => {
     const { name, value } = event.target;
-    setForm((prev) => ({ ...prev, [name]: value }));
+    setForm((prev) => ({
+      ...prev,
+      [name]: value,
+      ...(name === "item_type" ? { tracking_type: defaultTrackingType(value) } : {}),
+    }));
   };
 
   const getCreateError = (err) => {
@@ -115,7 +131,7 @@ export default function CatalogPage() {
           <button type="submit">Найти</button>
         </form>
 
-        <div className="card">
+        {canEditCatalog ? <div className="card">
           <h2>Новая позиция</h2>
           <form className="form grid-form" onSubmit={handleSubmit}>
             <label>
@@ -127,9 +143,10 @@ export default function CatalogPage() {
             <label>Производитель<input name="manufacturer" value={form.manufacturer} onChange={handleChange} /></label>
             <label>Ед. изм.<input name="unit" value={form.unit} onChange={handleChange} /></label>
             <label>Тип<select name="item_type" value={form.item_type} onChange={handleChange}>{Object.entries(ITEM_TYPE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+            <label>Тип учета<select name="tracking_type" value={form.tracking_type} onChange={handleChange}>{Object.entries(TRACKING_TYPE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
             <button type="submit">Добавить</button>
           </form>
-        </div>
+        </div> : null}
 
         <div className="card">
           <h2>Номенклатура</h2>
@@ -143,9 +160,10 @@ export default function CatalogPage() {
                     <th>Наименование</th>
                     <th>Модель</th>
                     <th>Тип</th>
+                    <th>Тип учета</th>
                     <th>Производитель</th>
                     <th>Ед. изм.</th>
-                    <th>Действия</th>
+                    {canEditCatalog ? <th>Действия</th> : null}
                   </tr>
                 </thead>
                 <tbody>
@@ -155,13 +173,14 @@ export default function CatalogPage() {
                       <td>{item.name}</td>
                       <td>{item.equipment_model_name || "-"}</td>
                       <td>{getItemTypeLabel(item.item_type)}</td>
+                      <td>{TRACKING_TYPE_LABELS[item.tracking_type] || item.tracking_type}</td>
                       <td>{item.manufacturer || "-"}</td>
                       <td>{item.unit}</td>
-                      <td>
+                      {canEditCatalog ? <td>
                         <button type="button" className="ghost-button" onClick={() => handleDelete(item)}>
                           Удалить
                         </button>
-                      </td>
+                      </td> : null}
                     </tr>
                   ))}
                 </tbody>

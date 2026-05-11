@@ -38,6 +38,11 @@ export async function createContract(payload) {
   return response.data;
 }
 
+export async function updateContract(id, payload) {
+  const response = await inventoryClient.patch(`/api/contracts/${id}/`, payload);
+  return response.data;
+}
+
 export async function getEquipmentUnits(params = {}) {
   const response = await inventoryClient.get("/api/equipment-units/", { params });
   return response.data;
@@ -85,6 +90,11 @@ export async function createReservation(payload) {
 
 export async function releaseReservation(id, payload = {}) {
   const response = await inventoryClient.post(`/api/reservations/${id}/release/`, payload);
+  return response.data;
+}
+
+export async function increaseReservation(id, payload = {}) {
+  const response = await inventoryClient.post(`/api/reservations/${id}/increase/`, payload);
   return response.data;
 }
 

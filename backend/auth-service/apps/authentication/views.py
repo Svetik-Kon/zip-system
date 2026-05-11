@@ -52,7 +52,7 @@ class OrganizationListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        if request.user.role != "admin":
+        if request.user.role == "customer":
             return Response({"detail": "Нет доступа."}, status=403)
 
         organizations = Organization.objects.all().order_by("name")

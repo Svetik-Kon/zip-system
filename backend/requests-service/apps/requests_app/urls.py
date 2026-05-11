@@ -7,6 +7,7 @@ from .views import (
     RequestAssignView,
     RequestChangeStatusView,
     RequestChangePriorityView,
+    RequestItemWorkflowView,
 )
 
 urlpatterns = [
@@ -17,4 +18,5 @@ urlpatterns = [
     path("api/requests/<uuid:pk>/assign/", RequestAssignView.as_view(), name="requests-assign"),
     path("api/requests/<uuid:pk>/change-status/", RequestChangeStatusView.as_view(), name="requests-change-status"),
     path("api/requests/<uuid:pk>/change-priority/", RequestChangePriorityView.as_view(), name="requests-change-priority"),
+    path("api/requests/<uuid:pk>/items/<uuid:item_pk>/workflow/", RequestItemWorkflowView.as_view(), name="requests-item-workflow"),
 ]
