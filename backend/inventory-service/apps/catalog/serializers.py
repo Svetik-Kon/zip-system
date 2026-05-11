@@ -6,11 +6,19 @@ from apps.balances.models import InventoryBalance
 from apps.locations.models import StorageLocation
 from apps.reservations.models import InventoryReservation, ReservationStatus
 from apps.transactions.models import (
+    BusinessOperation,
     InventoryTransaction,
     InventoryTransactionItem,
     TransactionType,
 )
-from .models import EquipmentComponent, EquipmentModel, InventoryItem
+from .models import (
+    CustomerContract,
+    EquipmentComponent,
+    EquipmentModel,
+    EquipmentUnit,
+    EquipmentUnitStatus,
+    InventoryItem,
+)
 
 
 class EquipmentModelSerializer(serializers.ModelSerializer):
@@ -32,6 +40,7 @@ class InventoryItemSerializer(serializers.ModelSerializer):
             "manufacturer",
             "unit",
             "item_type",
+            "tracking_type",
             "equipment_model",
             "equipment_model_name",
             "model_name",
@@ -72,6 +81,65 @@ class ItemAnalogSerializer(serializers.ModelSerializer):
         fields = ("id", "item", "item_name", "analog_item", "analog_item_name", "note")
 
 
+class CustomerContractSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CustomerContract
+        fields = (
+            "id",
+            "organization_id",
+            "customer_name",
+            "number",
+            "starts_at",
+            "ends_at",
+            "status",
+            "file",
+            "comment",
+            "created_at",
+            "updated_at",
+        )
+
+
+class EquipmentUnitSerializer(serializers.ModelSerializer):
+    item_name = serializers.CharField(source="item.name", read_only=True)
+    item_sku = serializers.CharField(source="item.sku", read_only=True)
+    location_name = serializers.CharField(source="location.name", read_only=True)
+    contract_number = serializers.CharField(source="contract.number", read_only=True)
+
+    class Meta:
+        model = EquipmentUnit
+        fields = (
+            "id",
+            "item",
+            "item_name",
+            "item_sku",
+            "serial_number",
+            "inventory_number",
+            "location",
+            "location_name",
+            "status",
+            "customer_name",
+            "contract",
+            "contract_number",
+            "responsible_person",
+            "reserved_until",
+            "notes",
+            "created_at",
+            "updated_at",
+        )
+
+    def create(self, validated_data):
+        unit = super().create(validated_data)
+        if unit.location_id:
+            balance, _ = InventoryBalance.objects.get_or_create(
+                item=unit.item,
+                location=unit.location,
+                defaults={"on_hand_quantity": 0, "reserved_quantity": 0},
+            )
+            balance.on_hand_quantity += 1
+            balance.save(update_fields=["on_hand_quantity", "updated_at"])
+        return unit
+
+
 class StorageLocationSerializer(serializers.ModelSerializer):
     class Meta:
         model = StorageLocation
@@ -107,6 +175,7 @@ class InventoryBalanceSerializer(serializers.ModelSerializer):
             "available_quantity",
             "updated_at",
         )
+        validators = []
 
     def validate(self, attrs):
         on_hand = attrs.get(
@@ -124,14 +193,17 @@ class InventoryBalanceSerializer(serializers.ModelSerializer):
         return attrs
 
     def create(self, validated_data):
-        balance, _ = InventoryBalance.objects.update_or_create(
+        reserved_quantity = validated_data.get("reserved_quantity")
+        balance, created = InventoryBalance.objects.update_or_create(
             item=validated_data["item"],
             location=validated_data["location"],
             defaults={
                 "on_hand_quantity": validated_data.get("on_hand_quantity", 0),
-                "reserved_quantity": validated_data.get("reserved_quantity", 0),
             },
         )
+        if created or reserved_quantity is not None:
+            balance.reserved_quantity = reserved_quantity or 0
+            balance.save(update_fields=["reserved_quantity", "updated_at"])
         return balance
 
 
@@ -139,6 +211,11 @@ class InventoryReservationSerializer(serializers.ModelSerializer):
     item_name = serializers.CharField(source="item.name", read_only=True)
     item_sku = serializers.CharField(source="item.sku", read_only=True)
     location_name = serializers.CharField(source="location.name", read_only=True)
+    contract_display = serializers.CharField(source="contract.number", read_only=True)
+    equipment_unit_serials = serializers.SerializerMethodField()
+
+    def get_equipment_unit_serials(self, obj):
+        return [unit.serial_number for unit in obj.equipment_units.all()]
 
     class Meta:
         model = InventoryReservation
@@ -146,12 +223,21 @@ class InventoryReservationSerializer(serializers.ModelSerializer):
             "id",
             "request_id",
             "request_item_id",
+            "reservation_type",
             "item",
             "item_name",
             "item_sku",
             "location",
             "location_name",
             "quantity",
+            "customer_name",
+            "reserved_until",
+            "contract",
+            "contract_display",
+            "equipment_units",
+            "equipment_unit_serials",
+            "contract_number",
+            "contract_file",
             "status",
             "created_by_id",
             "created_by_username",
@@ -165,13 +251,49 @@ class InventoryReservationSerializer(serializers.ModelSerializer):
 class ReservationCreateSerializer(serializers.Serializer):
     request_id = serializers.UUIDField(required=False, allow_null=True)
     request_item_id = serializers.UUIDField(required=False, allow_null=True)
+    reservation_type = serializers.ChoiceField(
+        choices=("quantity", "serial"),
+        required=False,
+        default="quantity",
+    )
     item = serializers.PrimaryKeyRelatedField(queryset=InventoryItem.objects.filter(is_active=True))
     location = serializers.PrimaryKeyRelatedField(queryset=StorageLocation.objects.filter(is_active=True))
-    quantity = serializers.IntegerField(min_value=1)
+    quantity = serializers.IntegerField(min_value=1, required=False)
+    customer_name = serializers.CharField(required=False, allow_blank=True)
+    reserved_until = serializers.DateField(required=False, allow_null=True)
+    contract = serializers.PrimaryKeyRelatedField(
+        queryset=CustomerContract.objects.all(),
+        required=False,
+        allow_null=True,
+    )
+    equipment_units = serializers.PrimaryKeyRelatedField(
+        queryset=EquipmentUnit.objects.select_related("item", "location").all(),
+        many=True,
+        required=False,
+    )
+    contract_number = serializers.CharField(required=False, allow_blank=True)
+    contract_file = serializers.FileField(required=False, allow_null=True)
     comment = serializers.CharField(required=False, allow_blank=True)
+
+    def validate(self, attrs):
+        equipment_units = attrs.get("equipment_units") or []
+        reservation_type = attrs.get("reservation_type")
+
+        if equipment_units:
+            attrs["reservation_type"] = "serial"
+            attrs["quantity"] = len(equipment_units)
+        elif reservation_type == "serial":
+            raise serializers.ValidationError({"equipment_units": "Select serial-numbered equipment units."})
+        elif not attrs.get("quantity"):
+            raise serializers.ValidationError({"quantity": "Quantity is required."})
+
+        return attrs
 
     def create(self, validated_data):
         request = self.context["request"]
+        equipment_units = validated_data.pop("equipment_units", [])
+        contract = validated_data.get("contract")
+        customer_name = validated_data.get("customer_name") or (contract.customer_name if contract else "")
 
         with transaction.atomic():
             balance, _ = InventoryBalance.objects.select_for_update().get_or_create(
@@ -185,35 +307,68 @@ class ReservationCreateSerializer(serializers.Serializer):
                     {"quantity": "Not enough available stock for reservation."}
                 )
 
+            if equipment_units:
+                locked_units = list(
+                    EquipmentUnit.objects.select_for_update().filter(
+                        id__in=[unit.id for unit in equipment_units]
+                    )
+                )
+                if len(locked_units) != len(equipment_units):
+                    raise serializers.ValidationError({"equipment_units": "Some equipment units were not found."})
+
+                for unit in locked_units:
+                    if unit.item_id != validated_data["item"].id:
+                        raise serializers.ValidationError({"equipment_units": f"{unit.serial_number} belongs to another item."})
+                    if unit.location_id != validated_data["location"].id:
+                        raise serializers.ValidationError({"equipment_units": f"{unit.serial_number} is in another location."})
+                    if unit.status != EquipmentUnitStatus.AVAILABLE:
+                        raise serializers.ValidationError({"equipment_units": f"{unit.serial_number} is not available."})
+
             balance.reserved_quantity += validated_data["quantity"]
             balance.save(update_fields=["reserved_quantity", "updated_at"])
 
-            return InventoryReservation.objects.create(
+            validated_data["customer_name"] = customer_name
+            reservation = InventoryReservation.objects.create(
                 **validated_data,
                 created_by_id=request.user.id,
                 created_by_username=request.user.username,
             )
+            if equipment_units:
+                reservation.equipment_units.set(equipment_units)
+                EquipmentUnit.objects.filter(id__in=[unit.id for unit in equipment_units]).update(
+                    status=EquipmentUnitStatus.RESERVED,
+                    customer_name=customer_name,
+                    contract=contract,
+                    reserved_until=validated_data.get("reserved_until"),
+                )
+            return reservation
 
 
 class InventoryTransactionItemSerializer(serializers.ModelSerializer):
     item_name = serializers.CharField(source="item.name", read_only=True)
     item_sku = serializers.CharField(source="item.sku", read_only=True)
+    equipment_unit_serials = serializers.SerializerMethodField()
+
+    def get_equipment_unit_serials(self, obj):
+        return [unit.serial_number for unit in obj.equipment_units.all()]
 
     class Meta:
         model = InventoryTransactionItem
-        fields = ("id", "item", "item_name", "item_sku", "quantity")
+        fields = ("id", "item", "item_name", "item_sku", "quantity", "equipment_units", "equipment_unit_serials")
 
 
 class InventoryTransactionSerializer(serializers.ModelSerializer):
     items = InventoryTransactionItemSerializer(many=True)
     source_location_name = serializers.CharField(source="source_location.name", read_only=True)
     destination_location_name = serializers.CharField(source="destination_location.name", read_only=True)
+    contract_display = serializers.CharField(source="contract.number", read_only=True)
 
     class Meta:
         model = InventoryTransaction
         fields = (
             "id",
             "transaction_type",
+            "operation_kind",
             "source_location",
             "source_location_name",
             "destination_location",
@@ -221,14 +376,22 @@ class InventoryTransactionSerializer(serializers.ModelSerializer):
             "related_request_id",
             "performed_by_id",
             "performed_by_username",
+            "customer_name",
+            "contract",
+            "contract_display",
+            "responsible_person",
+            "due_date",
             "reason",
             "comment",
             "items",
             "created_at",
         )
         read_only_fields = ("performed_by_id", "performed_by_username")
+        extra_kwargs = {"transaction_type": {"required": False}}
 
     def validate(self, attrs):
+        operation_kind = attrs.get("operation_kind", BusinessOperation.SUPPLIER_RECEIPT)
+        attrs["transaction_type"] = self._transaction_type_for_operation(operation_kind)
         transaction_type = attrs.get("transaction_type")
         source = attrs.get("source_location")
         destination = attrs.get("destination_location")
@@ -239,7 +402,24 @@ class InventoryTransactionSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"destination_location": "Destination location is required."})
         if transaction_type == TransactionType.ADJUSTMENT and not destination:
             raise serializers.ValidationError({"destination_location": "Location is required for adjustment."})
+        if operation_kind == BusinessOperation.CUSTOMER_ISSUE and not attrs.get("customer_name") and not attrs.get("contract"):
+            raise serializers.ValidationError({"customer_name": "Customer or contract is required for customer issue."})
+        if operation_kind == BusinessOperation.LAB_TRANSFER and not attrs.get("responsible_person"):
+            raise serializers.ValidationError({"responsible_person": "Responsible person is required for lab transfer."})
         return attrs
+
+    def _transaction_type_for_operation(self, operation_kind):
+        mapping = {
+            BusinessOperation.SUPPLIER_RECEIPT: TransactionType.RECEIPT,
+            BusinessOperation.WAREHOUSE_TRANSFER: TransactionType.TRANSFER,
+            BusinessOperation.CUSTOMER_ISSUE: TransactionType.ISSUE,
+            BusinessOperation.LAB_TRANSFER: TransactionType.TRANSFER,
+            BusinessOperation.CUSTOMER_RETURN: TransactionType.RECEIPT,
+            BusinessOperation.LAB_RETURN: TransactionType.RETURN,
+            BusinessOperation.WRITE_OFF: TransactionType.ISSUE,
+            BusinessOperation.STOCK_ADJUSTMENT: TransactionType.ADJUSTMENT,
+        }
+        return mapping.get(operation_kind, TransactionType.RECEIPT)
 
     def create(self, validated_data):
         request = self.context["request"]
@@ -255,19 +435,41 @@ class InventoryTransactionSerializer(serializers.ModelSerializer):
             for item_data in items_data:
                 item = item_data["item"]
                 quantity = item_data["quantity"]
-                self._apply_balance(inventory_transaction, item, quantity)
-                InventoryTransactionItem.objects.create(
+                equipment_units = item_data.pop("equipment_units", [])
+                if equipment_units:
+                    quantity = len(equipment_units)
+                self._apply_balance(inventory_transaction, item, quantity, equipment_units)
+                transaction_item = InventoryTransactionItem.objects.create(
                     transaction=inventory_transaction,
                     item=item,
                     quantity=quantity,
                 )
+                if equipment_units:
+                    transaction_item.equipment_units.set(equipment_units)
 
             return inventory_transaction
 
-    def _apply_balance(self, inventory_transaction, item, quantity):
+    def _apply_balance(self, inventory_transaction, item, quantity, equipment_units=None):
         source = inventory_transaction.source_location
         destination = inventory_transaction.destination_location
         transaction_type = inventory_transaction.transaction_type
+        equipment_units = equipment_units or []
+        locked_units = []
+
+        if equipment_units:
+            locked_units = list(
+                EquipmentUnit.objects.select_for_update().filter(
+                    id__in=[unit.id for unit in equipment_units]
+                )
+            )
+            if len(locked_units) != len(equipment_units):
+                raise serializers.ValidationError({"items": "Some equipment units were not found."})
+
+            for unit in locked_units:
+                if unit.item_id != item.id:
+                    raise serializers.ValidationError({"items": f"{unit.serial_number} belongs to another item."})
+                if source and unit.location_id != source.id:
+                    raise serializers.ValidationError({"items": f"{unit.serial_number} is in another source location."})
 
         if source:
             source_balance, _ = InventoryBalance.objects.select_for_update().get_or_create(
@@ -275,12 +477,25 @@ class InventoryTransactionSerializer(serializers.ModelSerializer):
                 location=source,
                 defaults={"on_hand_quantity": 0, "reserved_quantity": 0},
             )
-            if source_balance.available_quantity < quantity:
+            if equipment_units:
+                if source_balance.on_hand_quantity < quantity:
+                    raise serializers.ValidationError(
+                        {"items": f"Not enough stock for {item.sku} at source location."}
+                    )
+                reserved_selected = sum(1 for unit in locked_units if unit.status == EquipmentUnitStatus.RESERVED)
+                source_balance.on_hand_quantity -= quantity
+                source_balance.reserved_quantity = max(
+                    source_balance.reserved_quantity - reserved_selected,
+                    0,
+                )
+                source_balance.save(update_fields=["on_hand_quantity", "reserved_quantity", "updated_at"])
+            elif source_balance.available_quantity < quantity:
                 raise serializers.ValidationError(
                     {"items": f"Not enough available stock for {item.sku} at source location."}
                 )
-            source_balance.on_hand_quantity -= quantity
-            source_balance.save(update_fields=["on_hand_quantity", "updated_at"])
+            else:
+                source_balance.on_hand_quantity -= quantity
+                source_balance.save(update_fields=["on_hand_quantity", "updated_at"])
 
         if destination:
             destination_balance, _ = InventoryBalance.objects.select_for_update().get_or_create(
@@ -299,3 +514,27 @@ class InventoryTransactionSerializer(serializers.ModelSerializer):
             destination_balance.save(
                 update_fields=["on_hand_quantity", "reserved_quantity", "updated_at"]
             )
+
+        if locked_units:
+            for unit in locked_units:
+                if inventory_transaction.operation_kind == BusinessOperation.CUSTOMER_ISSUE:
+                    unit.status = EquipmentUnitStatus.CUSTOMER
+                    unit.customer_name = inventory_transaction.customer_name or (
+                        inventory_transaction.contract.customer_name if inventory_transaction.contract else ""
+                    )
+                    unit.contract = inventory_transaction.contract
+                elif inventory_transaction.operation_kind == BusinessOperation.LAB_TRANSFER:
+                    unit.status = EquipmentUnitStatus.LAB
+                    unit.responsible_person = inventory_transaction.responsible_person
+                elif inventory_transaction.operation_kind == BusinessOperation.WRITE_OFF:
+                    unit.status = EquipmentUnitStatus.WRITTEN_OFF
+                elif inventory_transaction.operation_kind in (BusinessOperation.CUSTOMER_RETURN, BusinessOperation.LAB_RETURN):
+                    unit.status = EquipmentUnitStatus.NEEDS_CHECK
+                    unit.customer_name = ""
+                    unit.contract = None
+                else:
+                    unit.status = EquipmentUnitStatus.AVAILABLE
+
+                if destination:
+                    unit.location = destination
+                unit.save(update_fields=["status", "customer_name", "contract", "responsible_person", "location", "updated_at"])

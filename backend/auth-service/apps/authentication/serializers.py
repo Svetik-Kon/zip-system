@@ -44,7 +44,11 @@ class AssignableUserSerializer(serializers.ModelSerializer):
 
 class UserCreateSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, min_length=6)
-    organization = serializers.UUIDField(required=False, allow_null=True)
+    organization = serializers.PrimaryKeyRelatedField(
+        queryset=Organization.objects.filter(is_active=True),
+        required=False,
+        allow_null=True,
+    )
 
     class Meta:
         model = User
@@ -69,21 +73,9 @@ class UserCreateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Некорректная роль.")
         return value
 
-    def validate_organization(self, value):
-        if value is None:
-            return None
-
-        if not Organization.objects.filter(id=value, is_active=True).exists():
-            raise serializers.ValidationError("Организация не найдена.")
-        return value
-
     def create(self, validated_data):
         password = validated_data.pop("password")
-        organization_id = validated_data.pop("organization", None)
-
-        organization = None
-        if organization_id:
-            organization = Organization.objects.get(id=organization_id)
+        organization = validated_data.pop("organization", None)
 
         user = User(
             **validated_data,
@@ -96,7 +88,11 @@ class UserCreateSerializer(serializers.ModelSerializer):
 
 class AdminUserSerializer(serializers.ModelSerializer):
     organization_name = serializers.CharField(source="organization.name", read_only=True)
-    organization = serializers.UUIDField(required=False, allow_null=True)
+    organization = serializers.PrimaryKeyRelatedField(
+        queryset=Organization.objects.filter(is_active=True),
+        required=False,
+        allow_null=True,
+    )
 
     class Meta:
         model = User
@@ -123,20 +119,10 @@ class AdminUserSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Некорректная роль.")
         return value
 
-    def validate_organization(self, value):
-        if value is None:
-            return None
-
-        if not Organization.objects.filter(id=value, is_active=True).exists():
-            raise serializers.ValidationError("Организация не найдена.")
-        return value
-
     def update(self, instance, validated_data):
-        organization_id = validated_data.pop("organization", serializers.empty)
-        if organization_id is not serializers.empty:
-            instance.organization = (
-                Organization.objects.get(id=organization_id) if organization_id else None
-            )
+        organization = validated_data.pop("organization", serializers.empty)
+        if organization is not serializers.empty:
+            instance.organization = organization
 
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
@@ -152,3 +138,19 @@ class OrganizationShortSerializer(serializers.ModelSerializer):
     class Meta:
         model = Organization
         fields = ("id", "name", "org_type", "is_active")
+
+
+class OrganizationCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Organization
+        fields = ("id", "name", "org_type", "is_active")
+        read_only_fields = ("id",)
+
+    def create(self, validated_data):
+        organization = Organization.objects.filter(name=validated_data["name"]).first()
+        if organization:
+            organization.org_type = validated_data.get("org_type", organization.org_type)
+            organization.is_active = True
+            organization.save(update_fields=["org_type", "is_active"])
+            return organization
+        return super().create(validated_data)

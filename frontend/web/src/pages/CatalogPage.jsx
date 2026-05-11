@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { createCatalogItem, getCatalogItems } from "../api/inventory";
+import { createCatalogItem, deleteCatalogItem, getCatalogItems } from "../api/inventory";
 import Navbar from "../components/Navbar";
 import { ITEM_TYPE_LABELS, getItemTypeLabel } from "../utils/dictionaries";
 
@@ -12,7 +12,6 @@ export default function CatalogPage() {
     manufacturer: "",
     unit: "шт.",
     item_type: "spare_part",
-    description: "",
   });
   const [filters, setFilters] = useState({ search: "", item_type: "" });
   const [error, setError] = useState("");
@@ -46,7 +45,6 @@ export default function CatalogPage() {
       manufacturer: "",
       unit: "шт.",
       item_type: "spare_part",
-      description: "",
     });
   };
 
@@ -75,12 +73,26 @@ export default function CatalogPage() {
         ...form,
         model_name: form.model_name || "",
         manufacturer: form.manufacturer || "",
-        description: form.description || "",
       });
       resetForm();
       await loadItems();
     } catch (err) {
       setError(getCreateError(err));
+    }
+  };
+
+  const handleDelete = async (item) => {
+    if (!window.confirm(`Удалить позицию "${item.sku} - ${item.name}"? Это действие нельзя отменить.`)) return;
+
+    try {
+      setError("");
+      await deleteCatalogItem(item.id);
+      await loadItems();
+    } catch (err) {
+      setError(
+        err?.response?.data?.detail
+          || "Не удалось удалить позицию. Если она уже использовалась в складском учете, удаление заблокировано."
+      );
     }
   };
 
@@ -115,7 +127,6 @@ export default function CatalogPage() {
             <label>Производитель<input name="manufacturer" value={form.manufacturer} onChange={handleChange} /></label>
             <label>Ед. изм.<input name="unit" value={form.unit} onChange={handleChange} /></label>
             <label>Тип<select name="item_type" value={form.item_type} onChange={handleChange}>{Object.entries(ITEM_TYPE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-            <label>Описание<textarea name="description" value={form.description} onChange={handleChange} /></label>
             <button type="submit">Добавить</button>
           </form>
         </div>
@@ -134,6 +145,7 @@ export default function CatalogPage() {
                     <th>Тип</th>
                     <th>Производитель</th>
                     <th>Ед. изм.</th>
+                    <th>Действия</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -145,6 +157,11 @@ export default function CatalogPage() {
                       <td>{getItemTypeLabel(item.item_type)}</td>
                       <td>{item.manufacturer || "-"}</td>
                       <td>{item.unit}</td>
+                      <td>
+                        <button type="button" className="ghost-button" onClick={() => handleDelete(item)}>
+                          Удалить
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>

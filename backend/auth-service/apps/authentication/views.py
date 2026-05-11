@@ -12,6 +12,7 @@ from .serializers import (
     AdminPasswordChangeSerializer,
     AdminUserSerializer,
     AssignableUserSerializer,
+    OrganizationCreateSerializer,
     OrganizationShortSerializer,
     UserCreateSerializer,
     UserMeSerializer,
@@ -54,9 +55,42 @@ class OrganizationListView(APIView):
         if request.user.role != "admin":
             return Response({"detail": "Нет доступа."}, status=403)
 
-        organizations = Organization.objects.filter(is_active=True).order_by("name")
+        organizations = Organization.objects.all().order_by("name")
         serializer = OrganizationShortSerializer(organizations, many=True)
         return Response(serializer.data)
+
+    def post(self, request):
+        if request.user.role != "admin":
+            return Response({"detail": "Нет доступа."}, status=403)
+
+        serializer = OrganizationCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        organization = serializer.save()
+        return Response(OrganizationShortSerializer(organization).data, status=201)
+
+
+class OrganizationDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk):
+        if request.user.role != "admin":
+            return Response({"detail": "Нет доступа."}, status=403)
+
+        organization = get_object_or_404(Organization, pk=pk)
+        serializer = OrganizationCreateSerializer(organization, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        organization = serializer.save()
+        return Response(OrganizationShortSerializer(organization).data)
+
+    def delete(self, request, pk):
+        if request.user.role != "admin":
+            return Response({"detail": "Нет доступа."}, status=403)
+
+        organization = get_object_or_404(Organization, pk=pk)
+        User.objects.filter(organization=organization).update(is_active=False)
+        organization.is_active = False
+        organization.save(update_fields=["is_active"])
+        return Response(status=204)
 
 
 class AdminUserCreateView(APIView):
@@ -70,6 +104,7 @@ class AdminUserCreateView(APIView):
         search = request.query_params.get("search")
         role = request.query_params.get("role")
         is_active = request.query_params.get("is_active")
+        organization = request.query_params.get("organization")
 
         if search:
             users = users.filter(
@@ -84,6 +119,9 @@ class AdminUserCreateView(APIView):
 
         if is_active in {"true", "false"}:
             users = users.filter(is_active=is_active == "true")
+
+        if organization:
+            users = users.filter(organization_id=organization)
 
         serializer = AdminUserSerializer(users, many=True)
         return Response(serializer.data)
@@ -115,6 +153,18 @@ class AdminUserDetailView(APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data)
+
+    def delete(self, request, pk):
+        if request.user.role != "admin":
+            return Response({"detail": "Нет доступа."}, status=403)
+
+        user = get_object_or_404(User, pk=pk)
+        if str(user.id) == str(request.user.id):
+            return Response({"detail": "Нельзя удалить самого себя."}, status=400)
+
+        user.is_active = False
+        user.save(update_fields=["is_active"])
+        return Response(status=204)
 
 
 class AdminUserPasswordView(APIView):

@@ -47,7 +47,6 @@ export default function Navbar({ children }) {
             </NavLink>
           ))}
         </nav>
-        <p className="sidebar-note">Разделы показываются по роли пользователя.</p>
       </aside>
 
       <main className="shell-content">{children}</main>

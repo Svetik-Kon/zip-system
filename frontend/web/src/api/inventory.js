@@ -24,6 +24,35 @@ export async function createCatalogItem(payload) {
   return response.data;
 }
 
+export async function deleteCatalogItem(id) {
+  await inventoryClient.delete(`/api/catalog/items/${id}/`);
+}
+
+export async function getContracts(params = {}) {
+  const response = await inventoryClient.get("/api/contracts/", { params });
+  return response.data;
+}
+
+export async function createContract(payload) {
+  const response = await inventoryClient.post("/api/contracts/", payload);
+  return response.data;
+}
+
+export async function getEquipmentUnits(params = {}) {
+  const response = await inventoryClient.get("/api/equipment-units/", { params });
+  return response.data;
+}
+
+export async function createEquipmentUnit(payload) {
+  const response = await inventoryClient.post("/api/equipment-units/", payload);
+  return response.data;
+}
+
+export async function updateEquipmentUnit(id, payload) {
+  const response = await inventoryClient.patch(`/api/equipment-units/${id}/`, payload);
+  return response.data;
+}
+
 export async function getLocations() {
   const response = await inventoryClient.get("/api/locations/");
   return response.data;
@@ -51,6 +80,11 @@ export async function getReservations(params = {}) {
 
 export async function createReservation(payload) {
   const response = await inventoryClient.post("/api/reservations/", payload);
+  return response.data;
+}
+
+export async function releaseReservation(id, payload = {}) {
+  const response = await inventoryClient.post(`/api/reservations/${id}/release/`, payload);
   return response.data;
 }
 

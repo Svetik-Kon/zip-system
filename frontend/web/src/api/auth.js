@@ -59,6 +59,40 @@ export async function createUserRequest(payload) {
   return response.data;
 }
 
+export async function createOrganizationRequest(payload) {
+  const token = getAccessToken();
+
+  const response = await axios.post(`${AUTH_BASE_URL}/api/admin/organizations/`, payload, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  return response.data;
+}
+
+export async function deleteOrganizationRequest(organizationId) {
+  const token = getAccessToken();
+
+  await axios.delete(`${AUTH_BASE_URL}/api/admin/organizations/${organizationId}/`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+}
+
+export async function updateOrganizationRequest(organizationId, payload) {
+  const token = getAccessToken();
+
+  const response = await axios.patch(`${AUTH_BASE_URL}/api/admin/organizations/${organizationId}/`, payload, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  return response.data;
+}
+
 export async function getAdminUsersRequest(params = {}) {
   const token = getAccessToken();
 
@@ -82,6 +116,16 @@ export async function updateAdminUserRequest(userId, payload) {
   });
 
   return response.data;
+}
+
+export async function deleteAdminUserRequest(userId) {
+  const token = getAccessToken();
+
+  await axios.delete(`${AUTH_BASE_URL}/api/admin/users/${userId}/`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
 }
 
 export async function changeAdminUserPasswordRequest(userId, password) {
