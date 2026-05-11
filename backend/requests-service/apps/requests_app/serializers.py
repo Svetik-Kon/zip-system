@@ -103,6 +103,7 @@ class ServiceRequestDetailSerializer(serializers.ModelSerializer):
             "is_internal",
             "contract_exists",
             "recall_allowed",
+            "allow_analog",
             "customer_organization_id",
             "integrator_organization_id",
             "created_by_id",
@@ -147,6 +148,7 @@ class ServiceRequestCreateSerializer(serializers.ModelSerializer):
             "priority",
             "contract_exists",
             "recall_allowed",
+            "allow_analog",
             "equipment_name",
             "equipment_model",
             "serial_number",
@@ -224,6 +226,10 @@ class ChangeStatusSerializer(serializers.Serializer):
 
 class ChangePrioritySerializer(serializers.Serializer):
     priority = serializers.ChoiceField(choices=RequestPriority.choices)
+    comment = serializers.CharField(required=False, allow_blank=True)
+
+
+class ConfirmReceiptSerializer(serializers.Serializer):
     comment = serializers.CharField(required=False, allow_blank=True)
 
 

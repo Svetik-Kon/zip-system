@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { createTransaction, getCatalogItems, getContracts, getEquipmentUnits, getLocations, getReservations, getTransactions } from "../api/inventory";
+import { changeRequestStatus, getRequestById } from "../api/requests";
 import Navbar from "../components/Navbar";
 
 const OPERATIONS = [
@@ -44,6 +45,74 @@ const INITIAL_FORM = {
   comment: "",
 };
 
+const APPROVED_FOR_CUSTOMER_ISSUE = ["awaiting_warehouse", "reserved", "ready_to_ship", "partially_fulfilled"];
+const APPROVED_FOR_LAB_TRANSFER = ["diagnostics", "awaiting_warehouse", "in_lab"];
+
+const CSV_ALIASES = {
+  sku: ["sku", "артикул"],
+  location: ["location", "локация", "склад", "куда"],
+  quantity: ["quantity", "количество", "qty"],
+  serial_number: ["serial_number", "серийный_номер", "серийник"],
+  serial_numbers: ["serial_numbers", "серийные_номера", "серийники"],
+  reason: ["reason", "основание"],
+  comment: ["comment", "комментарий"],
+};
+
+function parseCsvLine(line, delimiter) {
+  const values = [];
+  let value = "";
+  let quoted = false;
+
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    const next = line[index + 1];
+
+    if (char === "\"" && quoted && next === "\"") {
+      value += "\"";
+      index += 1;
+    } else if (char === "\"") {
+      quoted = !quoted;
+    } else if (char === delimiter && !quoted) {
+      values.push(value.trim());
+      value = "";
+    } else {
+      value += char;
+    }
+  }
+
+  values.push(value.trim());
+  return values;
+}
+
+function parseCsv(text) {
+  const lines = text.split(/\r?\n/).filter((line) => line.trim());
+  if (!lines.length) return [];
+  const delimiter = lines[0].split(";").length >= lines[0].split(",").length ? ";" : ",";
+  const headers = parseCsvLine(lines[0], delimiter).map((header) => header.trim().toLowerCase());
+  return lines.slice(1).map((line) => {
+    const values = parseCsvLine(line, delimiter);
+    return headers.reduce((row, header, index) => ({ ...row, [header]: values[index] || "" }), {});
+  });
+}
+
+function field(row, name) {
+  const aliases = CSV_ALIASES[name] || [name];
+  const key = aliases.find((alias) => Object.prototype.hasOwnProperty.call(row, alias));
+  return key ? row[key].trim() : "";
+}
+
+function toPositiveCount(value, fallback = 1) {
+  const number = Number(String(value || "").replace(",", "."));
+  return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
+}
+
+function splitSerials(value) {
+  return String(value || "")
+    .split(/\r?\n|\||,/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 export default function MovementsPage() {
   const [items, setItems] = useState([]);
   const [locations, setLocations] = useState([]);
@@ -55,6 +124,9 @@ export default function MovementsPage() {
   const [form, setForm] = useState(INITIAL_FORM);
   const [itemSearch, setItemSearch] = useState("");
   const [serialUnitSearch, setSerialUnitSearch] = useState("");
+  const [receiptImportOpen, setReceiptImportOpen] = useState(false);
+  const [receiptImportFile, setReceiptImportFile] = useState(null);
+  const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
   const selectedOperation = OPERATIONS.find((operation) => operation.value === form.operation_kind) || OPERATIONS[0];
@@ -198,6 +270,19 @@ export default function MovementsPage() {
     event.preventDefault();
     try {
       setError("");
+      let relatedRequest = null;
+      if (["customer_issue", "lab_transfer"].includes(form.operation_kind)) {
+        if (!form.related_request_id.trim()) {
+          setError("Для выдачи заказчику и передачи в лабораторию нужно указать UUID согласованной заявки.");
+          return;
+        }
+        relatedRequest = await getRequestById(form.related_request_id.trim());
+        const allowedStatuses = form.operation_kind === "customer_issue" ? APPROVED_FOR_CUSTOMER_ISSUE : APPROVED_FOR_LAB_TRANSFER;
+        if (!allowedStatuses.includes(relatedRequest.status)) {
+          setError("Заявка еще не согласована для этой операции. Сначала переведите ее через согласование в подходящий рабочий статус.");
+          return;
+        }
+      }
       const selectedUnitIds = form.equipment_units;
       const selectedReservations = reservations.filter((reservation) => (
         reservation.status === "active"
@@ -242,6 +327,12 @@ export default function MovementsPage() {
           serial_numbers: serialNumbers,
         }],
       });
+      if (form.operation_kind === "customer_issue" && relatedRequest?.id && relatedRequest.status !== "awaiting_confirmation") {
+        await changeRequestStatus(relatedRequest.id, { status: "awaiting_confirmation", comment: "Оборудование выдано заказчику, ожидается подтверждение получения." });
+      }
+      if (form.operation_kind === "lab_transfer" && relatedRequest?.id && relatedRequest.status !== "in_lab") {
+        await changeRequestStatus(relatedRequest.id, { status: "in_lab", comment: "Оборудование передано в лабораторию." });
+      }
       setForm(INITIAL_FORM);
       setItemSearch("");
       await loadAll();
@@ -250,11 +341,110 @@ export default function MovementsPage() {
     }
   };
 
+  const handleReceiptImportSubmit = async (event) => {
+    event.preventDefault();
+    if (!receiptImportFile) {
+      setError("Выбери CSV-файл приемки.");
+      return;
+    }
+
+    try {
+      setError("");
+      setMessage("Импорт приемки выполняется...");
+      const rows = parseCsv(await receiptImportFile.text());
+      if (!rows.length) {
+        setError("В CSV нет строк для загрузки.");
+        setMessage("");
+        return;
+      }
+
+      const itemBySku = new Map(items.map((item) => [item.sku.toLowerCase(), item]));
+      const locationByName = new Map(locations.map((location) => [location.name.toLowerCase(), location]));
+      let importedCount = 0;
+
+      for (const row of rows) {
+        const sku = field(row, "sku");
+        const locationName = field(row, "location");
+        const item = itemBySku.get(sku.toLowerCase());
+        const location = locationByName.get(locationName.toLowerCase());
+
+        if (!sku || !locationName) {
+          throw new Error("Для каждой строки нужны sku и location.");
+        }
+        if (!item) {
+          throw new Error(`SKU ${sku} не найден в каталоге. Сначала заведи позицию в каталоге.`);
+        }
+        if (!location) {
+          throw new Error(`Локация ${locationName} не найдена. Сначала заведи локацию.`);
+        }
+
+        const serials = splitSerials(`${field(row, "serial_number")}\n${field(row, "serial_numbers")}`);
+        const quantity = item.tracking_type === "serial" ? serials.length : toPositiveCount(field(row, "quantity"), 1);
+
+        if (item.tracking_type === "serial" && !serials.length) {
+          throw new Error(`Для серийной позиции ${sku} нужно указать serial_number или serial_numbers.`);
+        }
+
+        await createTransaction({
+          operation_kind: "supplier_receipt",
+          source_location: null,
+          destination_location: location.id,
+          related_request_id: null,
+          customer_name: "",
+          contract: null,
+          responsible_person: "",
+          due_date: null,
+          reason: field(row, "reason") || "Массовая приемка по CSV",
+          comment: field(row, "comment"),
+          items: [{
+            item: item.id,
+            quantity,
+            equipment_units: [],
+            reservation: null,
+            serial_numbers: serials,
+          }],
+        });
+        importedCount += 1;
+      }
+
+      setReceiptImportFile(null);
+      setReceiptImportOpen(false);
+      setMessage(`Импортировано строк приемки: ${importedCount}.`);
+      await loadAll();
+    } catch (err) {
+      setMessage("");
+      setError(err?.response?.data ? JSON.stringify(err.response.data) : err.message || "Не удалось импортировать CSV приемки.");
+    }
+  };
+
   return (
     <Navbar>
       <div className="page">
-        <div className="page-header"><h1>Движения ЗИП</h1></div>
+        <div className="page-header">
+          <h1>Движения ЗИП</h1>
+          <div className="compact-actions">
+            <button type="button" className="ghost-button" onClick={() => setReceiptImportOpen(true)}>Приемка CSV</button>
+          </div>
+        </div>
         {error ? <div className="error">{error}</div> : null}
+        {message ? <div className="success">{message}</div> : null}
+
+        {receiptImportOpen ? (
+          <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setReceiptImportOpen(false)}>
+            <div className="modal-panel" role="dialog" aria-modal="true" aria-label="Импорт приемки CSV">
+              <div className="modal-header">
+                <h2>Приемка CSV</h2>
+                <button className="ghost-button" type="button" onClick={() => setReceiptImportOpen(false)}>Закрыть</button>
+              </div>
+              <form className="form" onSubmit={handleReceiptImportSubmit}>
+                <input type="file" accept=".csv,text/csv" onChange={(event) => setReceiptImportFile(event.target.files?.[0] || null)} />
+                <p className="field-note">SKU и локации должны уже существовать. Для серийного учета укажи серийники, для количественного - количество.</p>
+                <a className="button-link secondary" href="/sample-receipt.csv" download>Скачать шаблон CSV</a>
+                <button type="submit">Загрузить приемку</button>
+              </form>
+            </div>
+          </div>
+        ) : null}
 
         <div className="card movement-card">
           <h2>Новая операция</h2>

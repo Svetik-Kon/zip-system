@@ -18,7 +18,7 @@ class RequestPriority(models.TextChoices):
 
 class RequestStatus(models.TextChoices):
     NEW = "new", "Новая"
-    IN_REVIEW = "in_review", "На проверке"
+    IN_REVIEW = "in_review", "На согласовании"
     DIAGNOSTICS = "diagnostics", "Диагностика"
     AWAITING_WAREHOUSE = "awaiting_warehouse", "Ожидает склад"
     AWAITING_PROCUREMENT = "awaiting_procurement", "Ожидает закупки"
@@ -30,6 +30,7 @@ class RequestStatus(models.TextChoices):
     RESERVED = "reserved", "Зарезервировано"
     READY_TO_SHIP = "ready_to_ship", "Готово к отгрузке"
     SHIPPED = "shipped", "Отгружено"
+    AWAITING_CONFIRMATION = "awaiting_confirmation", "Ожидает подтверждения"
     IN_LAB = "in_lab", "В лаборатории"
     RECEIVED = "received", "Получено"
     CLOSED = "closed", "Закрыта"
@@ -63,6 +64,7 @@ class ServiceRequest(models.Model):
     is_internal = models.BooleanField(default=False)
     contract_exists = models.BooleanField(default=False)
     recall_allowed = models.BooleanField(default=False)
+    allow_analog = models.BooleanField(default=False)
 
     customer_organization_id = models.UUIDField(null=True, blank=True)
     integrator_organization_id = models.UUIDField(null=True, blank=True)

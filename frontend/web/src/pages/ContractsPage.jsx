@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { createContract, getContracts, updateContract } from "../api/inventory";
 import { getOrganizationsRequest } from "../api/auth";
+import { getMe } from "../utils/auth";
 import Navbar from "../components/Navbar";
 
 const CONTRACT_STATUS_LABELS = {
@@ -34,6 +35,7 @@ function appendIfValue(formData, key, value) {
 }
 
 export default function ContractsPage() {
+  const me = getMe();
   const [contracts, setContracts] = useState([]);
   const [organizations, setOrganizations] = useState([]);
   const [filters, setFilters] = useState({ search: "", status: "", organization_id: "" });
@@ -43,6 +45,7 @@ export default function ContractsPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const canEditContracts = ["admin", "manager"].includes(me?.role);
 
   const customerOrganizations = useMemo(
     () => organizations.filter((org) => org.is_active && org.org_type === "customer"),
@@ -139,7 +142,7 @@ export default function ContractsPage() {
   };
 
   const renderModal = () => {
-    if (activeModal !== "create") return null;
+    if (activeModal !== "create" || !canEditContracts) return null;
 
     return (
       <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && closeModal()}>
@@ -173,9 +176,9 @@ export default function ContractsPage() {
       <div className="page">
         <div className="page-header">
           <h1>Договоры</h1>
-          <div className="compact-actions">
+          {canEditContracts ? <div className="compact-actions">
             <button type="button" onClick={() => setActiveModal("create")}>Договор</button>
-          </div>
+          </div> : null}
         </div>
 
         {error ? <div className="error">{error}</div> : null}
@@ -217,9 +220,9 @@ export default function ContractsPage() {
                       <td>{contract.number}</td>
                       <td>{contract.starts_at || "-"} - {contract.ends_at || "-"}</td>
                       <td>
-                        <select value={contract.status} onChange={(event) => handleStatusChange(contract, event.target.value)}>
+                        {canEditContracts ? <select value={contract.status} onChange={(event) => handleStatusChange(contract, event.target.value)}>
                           {Object.entries(CONTRACT_STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-                        </select>
+                        </select> : CONTRACT_STATUS_LABELS[contract.status] || contract.status}
                       </td>
                       <td>{contract.file ? <a href={fileUrl(contract.file)} target="_blank" rel="noreferrer">Открыть</a> : "-"}</td>
                       <td>{contract.comment || "-"}</td>

@@ -13,7 +13,7 @@ const defaultTrackingType = (itemType) => (itemType === "equipment" ? "serial" :
 
 export default function CatalogPage() {
   const me = getMe();
-  const canEditCatalog = me?.role !== "manager";
+  const canEditCatalog = ["admin", "warehouse"].includes(me?.role);
   const [items, setItems] = useState([]);
   const [form, setForm] = useState({
     sku: "",

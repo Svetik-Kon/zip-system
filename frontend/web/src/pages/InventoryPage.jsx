@@ -1,7 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  createBalance,
-  createCatalogItem,
   createLocation,
   createReservation,
   getBalances,
@@ -62,73 +60,6 @@ const inventoryFileUrl = (value) => {
   return `http://localhost:8003/${value}`;
 };
 
-const CSV_ALIASES = {
-  sku: ["sku", "артикул"],
-  name: ["name", "наименование", "название"],
-  manufacturer: ["manufacturer", "производитель"],
-  unit: ["unit", "единица", "ед. изм.", "ед_изм"],
-  item_type: ["item_type", "тип"],
-  tracking_type: ["tracking_type", "тип_учета"],
-  model_name: ["model_name", "модель"],
-  description: ["description", "описание"],
-  location: ["location", "локация", "склад"],
-  location_type: ["location_type", "тип_локации"],
-  address: ["address", "адрес"],
-  on_hand_quantity: ["on_hand_quantity", "в_наличии", "остаток"],
-  reserved_quantity: ["reserved_quantity", "резерв"],
-  customer_name: ["customer_name", "заказчик", "клиент"],
-  reserved_until: ["reserved_until", "зарезервировано_до", "до_даты"],
-  contract_number: ["contract_number", "договор", "номер_договора"],
-};
-
-function parseCsvLine(line, delimiter) {
-  const values = [];
-  let value = "";
-  let quoted = false;
-
-  for (let index = 0; index < line.length; index += 1) {
-    const char = line[index];
-    const next = line[index + 1];
-
-    if (char === "\"" && quoted && next === "\"") {
-      value += "\"";
-      index += 1;
-    } else if (char === "\"") {
-      quoted = !quoted;
-    } else if (char === delimiter && !quoted) {
-      values.push(value.trim());
-      value = "";
-    } else {
-      value += char;
-    }
-  }
-
-  values.push(value.trim());
-  return values;
-}
-
-function parseCsv(text) {
-  const lines = text.split(/\r?\n/).filter((line) => line.trim());
-  if (!lines.length) return [];
-  const delimiter = lines[0].split(";").length >= lines[0].split(",").length ? ";" : ",";
-  const headers = parseCsvLine(lines[0], delimiter).map((header) => header.trim().toLowerCase());
-  return lines.slice(1).map((line) => {
-    const values = parseCsvLine(line, delimiter);
-    return headers.reduce((row, header, index) => ({ ...row, [header]: values[index] || "" }), {});
-  });
-}
-
-function field(row, name) {
-  const aliases = CSV_ALIASES[name] || [name];
-  const key = aliases.find((alias) => Object.prototype.hasOwnProperty.call(row, alias));
-  return key ? row[key].trim() : "";
-}
-
-function toCount(value, fallback = 0) {
-  const number = Number(String(value || "").replace(",", "."));
-  return Number.isFinite(number) && number >= 0 ? Math.floor(number) : fallback;
-}
-
 function appendIfValue(formData, name, value) {
   if (value !== null && value !== undefined && value !== "") {
     formData.append(name, value);
@@ -141,7 +72,7 @@ function matchesText(values, text) {
 
 export default function InventoryPage() {
   const me = getMe();
-  const canEditInventory = me?.role !== "manager";
+  const canEditInventory = ["admin", "warehouse"].includes(me?.role);
   const [items, setItems] = useState([]);
   const [locations, setLocations] = useState([]);
   const [balances, setBalances] = useState([]);
@@ -170,7 +101,6 @@ export default function InventoryPage() {
     is_hard: false,
     comment: "",
   });
-  const [importFile, setImportFile] = useState(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -494,94 +424,6 @@ export default function InventoryPage() {
     setActiveModal("reserve");
   };
 
-  const handleImportSubmit = async (event) => {
-    event.preventDefault();
-    if (!importFile) {
-      setError("Выбери CSV-файл для импорта.");
-      return;
-    }
-
-    try {
-      setError("");
-      setMessage("Импорт выполняется...");
-      const rows = parseCsv(await importFile.text());
-      if (!rows.length) {
-        setError("В CSV нет строк для загрузки.");
-        setMessage("");
-        return;
-      }
-
-      const itemMap = new Map((await getCatalogItems()).map((item) => [item.sku.toLowerCase(), item]));
-      const locationMap = new Map((await getLocations()).map((location) => [location.name.toLowerCase(), location]));
-
-      for (const row of rows) {
-        const sku = field(row, "sku");
-        const name = field(row, "name");
-        const locationName = field(row, "location");
-
-        if (!sku || !name || !locationName) {
-          throw new Error("Для каждой строки нужны sku, name и location.");
-        }
-
-        let item = itemMap.get(sku.toLowerCase());
-        if (!item) {
-          const itemType = field(row, "item_type") || "spare_part";
-          item = await createCatalogItem({
-            sku,
-            name,
-            manufacturer: field(row, "manufacturer"),
-            unit: field(row, "unit") || "шт.",
-            item_type: itemType,
-            tracking_type: field(row, "tracking_type") || (itemType === "equipment" ? "serial" : "quantity"),
-            model_name: field(row, "model_name"),
-            description: field(row, "description"),
-          });
-          itemMap.set(item.sku.toLowerCase(), item);
-        }
-
-        let location = locationMap.get(locationName.toLowerCase());
-        if (!location) {
-          location = await createLocation({
-            organization_id: me?.organization || null,
-            name: locationName,
-            location_type: field(row, "location_type") || "warehouse",
-            address: field(row, "address"),
-          });
-          locationMap.set(location.name.toLowerCase(), location);
-        }
-
-        await createBalance({
-          item: item.id,
-          location: location.id,
-          on_hand_quantity: toCount(field(row, "on_hand_quantity")),
-        });
-
-        const reservedQuantity = toCount(field(row, "reserved_quantity"));
-        if (reservedQuantity > 0) {
-          await createReservation(buildReservationPayload({
-            reservation_type: "quantity",
-            item: item.id,
-            location: location.id,
-            quantity: reservedQuantity,
-            equipment_units: [],
-            customer_name: field(row, "customer_name"),
-            reserved_until: field(row, "reserved_until"),
-            contract_number: field(row, "contract_number"),
-            comment: "Создано при импорте остатков.",
-          }));
-        }
-      }
-
-      setImportFile(null);
-      setMessage(`Импортировано строк: ${rows.length}.`);
-      closeModal();
-      await loadAll();
-    } catch (err) {
-      setMessage("");
-      setError(err?.response?.data ? JSON.stringify(err.response.data) : err.message || "Не удалось импортировать CSV.");
-    }
-  };
-
   const itemOptions = items.map((item) => <option key={item.id} value={item.id}>{item.sku} - {item.name}</option>);
   const locationOptions = locations.map((location) => <option key={location.id} value={location.id}>{location.name}</option>);
   const reserveItem = items.find((item) => item.id === reserveForm.item);
@@ -595,7 +437,6 @@ export default function InventoryPage() {
     const titles = {
       location: "Новая локация",
       reserve: "Создать резерв",
-      import: "Импорт CSV",
     };
 
     return (
@@ -671,13 +512,6 @@ export default function InventoryPage() {
             </form>
           ) : null}
 
-          {activeModal === "import" ? (
-            <form className="form" onSubmit={handleImportSubmit}>
-              <input type="file" accept=".csv,text/csv" onChange={(event) => setImportFile(event.target.files?.[0] || null)} />
-              <a className="button-link secondary" href="/sample-inventory.csv" download>Скачать шаблон CSV</a>
-              <button type="submit">Загрузить</button>
-            </form>
-          ) : null}
         </div>
       </div>
     );
@@ -692,7 +526,6 @@ export default function InventoryPage() {
             <div className="compact-actions">
               <button type="button" onClick={() => openReserveForItem()}>Резерв</button>
               <button type="button" onClick={() => setActiveModal("location")}>Локация</button>
-              <button type="button" className="ghost-button" onClick={() => setActiveModal("import")}>CSV</button>
             </div>
           ) : null}
         </div>
@@ -715,7 +548,7 @@ export default function InventoryPage() {
           <div className="metric-card"><span>Позиции</span><strong>{summary.positions}</strong></div>
           <div className="metric-card"><span>Всего на складе</span><strong>{summary.onHand}</strong></div>
           <div className="metric-card"><span>Доступно</span><strong>{summary.available}</strong></div>
-          <div className="metric-card"><span>Серийных карточек</span><strong>{summary.units}</strong></div>
+          <div className="metric-card"><span>Серийных номеров</span><strong>{summary.units}</strong></div>
           <div className="metric-card"><span>Активных резервов</span><strong>{summary.activeReservations}</strong></div>
         </div>
 

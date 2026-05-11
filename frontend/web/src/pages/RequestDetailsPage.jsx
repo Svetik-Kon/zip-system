@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
-import { assignRequest, changeRequestPriority, changeRequestStatus, createComment, getRequestById, updateRequestItemWorkflow } from "../api/requests";
+import { assignRequest, changeRequestPriority, changeRequestStatus, confirmRequestReceipt, createComment, getRequestById, updateRequestItemWorkflow } from "../api/requests";
 import { getAssignableUsersRequest } from "../api/auth";
 import { getMe } from "../utils/auth";
 import Navbar from "../components/Navbar";
@@ -23,6 +23,7 @@ const statusTone = {
   awaiting_return: "yellow",
   partially_fulfilled: "blue",
   reserved: "blue",
+  awaiting_confirmation: "blue",
   ready_to_ship: "green",
   shipped: "green",
   closed: "neutral",
@@ -41,6 +42,42 @@ const lineStatusLabels = {
 
 const includesText = (value, query) => String(value || "").toLowerCase().includes(query);
 
+const WORKFLOW_TRANSITIONS = {
+  new: ["in_review", "cancelled"],
+  in_review: ["awaiting_warehouse", "diagnostics", "rejected", "cancelled"],
+  diagnostics: ["awaiting_warehouse", "awaiting_replacement", "in_lab", "closed", "rejected"],
+  awaiting_warehouse: ["reserved", "shortage", "awaiting_procurement", "awaiting_reallocation", "ready_to_ship", "awaiting_confirmation"],
+  awaiting_procurement: ["awaiting_warehouse", "awaiting_replacement", "shortage", "cancelled"],
+  awaiting_replacement: ["awaiting_warehouse", "awaiting_procurement", "shortage", "cancelled"],
+  awaiting_reallocation: ["awaiting_warehouse", "reserved", "shortage", "cancelled"],
+  shortage: ["awaiting_procurement", "awaiting_replacement", "awaiting_reallocation", "partially_fulfilled", "cancelled"],
+  reserved: ["ready_to_ship", "partially_fulfilled", "awaiting_confirmation", "cancelled"],
+  ready_to_ship: ["awaiting_confirmation", "partially_fulfilled", "cancelled"],
+  partially_fulfilled: ["awaiting_warehouse", "awaiting_procurement", "ready_to_ship", "awaiting_confirmation", "closed"],
+  shipped: ["awaiting_confirmation", "received"],
+  awaiting_confirmation: ["received"],
+  received: ["closed"],
+  in_lab: ["diagnostics", "awaiting_warehouse", "closed"],
+  awaiting_return: ["diagnostics", "closed", "cancelled"],
+};
+
+const WAREHOUSE_WORKFLOW_STATUSES = new Set([
+  "awaiting_warehouse",
+  "reserved",
+  "ready_to_ship",
+  "awaiting_confirmation",
+  "partially_fulfilled",
+  "shortage",
+  "awaiting_procurement",
+  "awaiting_replacement",
+  "awaiting_reallocation",
+]);
+
+const WAREHOUSE_WORKFLOW_ROLES = new Set(["admin", "manager", "warehouse", "procurement"]);
+
+const PROCUREMENT_WORKFLOW_STATUSES = new Set(["awaiting_procurement", "awaiting_replacement"]);
+const PROCUREMENT_WORKFLOW_ROLES = new Set(["admin", "manager", "procurement"]);
+
 export default function RequestDetailsPage() {
   const { id } = useParams();
   const me = getMe();
@@ -49,11 +86,8 @@ export default function RequestDetailsPage() {
   const [commentBody, setCommentBody] = useState("");
   const [isInternal, setIsInternal] = useState(false);
   const [newStatus, setNewStatus] = useState("in_review");
-  const [statusComment, setStatusComment] = useState("");
   const [newPriority, setNewPriority] = useState("medium");
-  const [priorityComment, setPriorityComment] = useState("");
   const [assigneeId, setAssigneeId] = useState("");
-  const [assignComment, setAssignComment] = useState("");
   const [statusSearch, setStatusSearch] = useState("");
   const [assigneeSearch, setAssigneeSearch] = useState("");
   const [itemDrafts, setItemDrafts] = useState({});
@@ -64,13 +98,33 @@ export default function RequestDetailsPage() {
 
   const isCustomer = me?.role === "customer";
   const canManageRequest = !isCustomer;
+  const canConfirmReceipt = requestData && ["awaiting_confirmation", "shipped"].includes(requestData.status)
+    && (isCustomer || ["admin", "manager"].includes(me?.role));
 
   const selectedAssignee = useMemo(() => assignableUsers.find((user) => user.id === assigneeId) || null, [assignableUsers, assigneeId]);
 
   const filteredStatuses = useMemo(() => {
     const text = statusSearch.trim().toLowerCase();
-    return Object.entries(REQUEST_STATUS_LABELS).filter(([value, label]) => !text || includesText(value, text) || includesText(label, text));
-  }, [statusSearch]);
+    const rawAllowed = requestData ? WORKFLOW_TRANSITIONS[requestData.status] || [] : [];
+    const role = me?.role;
+    const allowedByApproval = requestData?.status === "in_review" && !["admin", "manager"].includes(role)
+      ? []
+      : rawAllowed;
+    const allowed = allowedByApproval.filter((status) => (
+      (
+        WAREHOUSE_WORKFLOW_ROLES.has(role)
+        || (!WAREHOUSE_WORKFLOW_STATUSES.has(requestData?.status) && !WAREHOUSE_WORKFLOW_STATUSES.has(status))
+      )
+      && (
+        PROCUREMENT_WORKFLOW_ROLES.has(role)
+        || (!PROCUREMENT_WORKFLOW_STATUSES.has(requestData?.status) && !PROCUREMENT_WORKFLOW_STATUSES.has(status))
+      )
+    ));
+    return Object.entries(REQUEST_STATUS_LABELS).filter(([value, label]) => (
+      allowed.includes(value)
+      && (!text || includesText(value, text) || includesText(label, text))
+    ));
+  }, [requestData, statusSearch]);
 
   const filteredAssignees = useMemo(() => {
     const text = assigneeSearch.trim().toLowerCase();
@@ -96,7 +150,6 @@ export default function RequestDetailsPage() {
       replacement_item_name: item.replacement_item_name || "",
       replacement_status: item.replacement_status || "",
       allow_analog: Boolean(item.allow_analog),
-      comment: "",
     }])));
   };
 
@@ -144,8 +197,7 @@ export default function RequestDetailsPage() {
     event.preventDefault();
     try {
       setSaving(true);
-      await changeRequestPriority(id, { priority: newPriority, comment: priorityComment });
-      setPriorityComment("");
+      await changeRequestPriority(id, { priority: newPriority, comment: "" });
       await reloadRequest();
     } catch {
       setError("Не удалось изменить приоритет.");
@@ -159,8 +211,7 @@ export default function RequestDetailsPage() {
     if (!canManageRequest) return;
     try {
       setSaving(true);
-      await changeRequestStatus(id, { status: newStatus, comment: statusComment });
-      setStatusComment("");
+      await changeRequestStatus(id, { status: newStatus, comment: "" });
       await reloadRequest();
     } catch {
       setError("Не удалось изменить статус.");
@@ -174,11 +225,23 @@ export default function RequestDetailsPage() {
     if (!canManageRequest || !assigneeId) return;
     try {
       setSaving(true);
-      await assignRequest(id, { assignee_id: assigneeId, assignee_username: selectedAssignee?.username || "", comment: assignComment });
-      setAssignComment("");
+      await assignRequest(id, { assignee_id: assigneeId, assignee_username: selectedAssignee?.username || "", comment: "" });
       await reloadRequest();
     } catch {
       setError("Не удалось назначить исполнителя.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleConfirmReceipt = async () => {
+    try {
+      setSaving(true);
+      const data = await confirmRequestReceipt(id);
+      setRequestData(data);
+      hydrateForm(data);
+    } catch {
+      setError("Не удалось подтвердить получение.");
     } finally {
       setSaving(false);
     }
@@ -241,6 +304,9 @@ export default function RequestDetailsPage() {
                   <span className={`badge badge-${priorityTone[requestData.priority] || "neutral"}`}>{getRequestPriorityLabel(requestData.priority)}</span>
                 </div>
               </div>
+              {requestData.status === "in_review" ? (
+                <div className="workflow-warning">Заявка на согласовании. До подтверждения договора нельзя выдавать оборудование заказчику или забирать его на диагностику.</div>
+              ) : null}
 
               <div className="request-meta-grid">
                 {renderField("Тип", getRequestTypeLabel(requestData.request_type))}
@@ -249,12 +315,18 @@ export default function RequestDetailsPage() {
                 {renderField("Площадка", requestData.site_name)}
                 {renderField("Оборудование", `${requestData.equipment_name || "-"}${requestData.equipment_model ? ` / ${requestData.equipment_model}` : ""}`)}
                 {renderField("Серийный номер", requestData.serial_number)}
+                {requestData.request_type === "equipment_replacement" ? renderField("Аналог", requestData.allow_analog ? "Возможен" : "Нужна точная замена") : null}
               </div>
 
               <div className="request-description">
                 <span>Описание</span>
                 <p>{requestData.description || "Описание не заполнено."}</p>
               </div>
+              {canConfirmReceipt ? (
+                <div className="detail-actions">
+                  <button type="button" onClick={handleConfirmReceipt} disabled={saving}>Подтвердить получение</button>
+                </div>
+              ) : null}
             </div>
 
             <div className="dashboard-grid request-actions-grid">
@@ -264,7 +336,6 @@ export default function RequestDetailsPage() {
                   <select value={newPriority} onChange={(event) => setNewPriority(event.target.value)}>
                     {Object.entries(REQUEST_PRIORITY_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                   </select>
-                  <textarea placeholder="Комментарий" value={priorityComment} onChange={(event) => setPriorityComment(event.target.value)} />
                   <button type="submit" disabled={saving}>Сохранить приоритет</button>
                 </form>
               </div>
@@ -275,10 +346,11 @@ export default function RequestDetailsPage() {
                     <h2>Сменить статус</h2>
                     <form onSubmit={handleStatusSubmit} className="form">
                       <input className="select-search" placeholder="Найти статус" value={statusSearch} onChange={(event) => setStatusSearch(event.target.value)} />
-                      <select value={newStatus} onChange={(event) => setNewStatus(event.target.value)}>
+                      <select value={filteredStatuses.some(([value]) => value === newStatus) ? newStatus : ""} onChange={(event) => setNewStatus(event.target.value)} required>
+                        <option value="">Выбери следующий статус</option>
                         {filteredStatuses.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                       </select>
-                      <textarea placeholder="Комментарий, причина дефицита или сценарий ожидания" value={statusComment} onChange={(event) => setStatusComment(event.target.value)} />
+                      {!filteredStatuses.length ? <p className="field-note">Для текущего статуса нет доступных переходов.</p> : null}
                       <button type="submit" disabled={saving}>Изменить статус</button>
                     </form>
                   </div>
@@ -291,7 +363,6 @@ export default function RequestDetailsPage() {
                         <option value="">Выбери исполнителя</option>
                         {filteredAssignees.map((user) => <option key={user.id} value={user.id}>{user.username} ({getRoleLabel(user.role)})</option>)}
                       </select>
-                      <textarea placeholder="Комментарий" value={assignComment} onChange={(event) => setAssignComment(event.target.value)} />
                       <button type="submit" disabled={saving}>Назначить</button>
                     </form>
                   </div>
@@ -299,9 +370,9 @@ export default function RequestDetailsPage() {
               ) : null}
             </div>
 
+            {requestData.items?.length ? (
             <div className="card">
               <h2>Позиции</h2>
-              {!requestData.items?.length ? <p>Позиции отсутствуют.</p> : (
                 <div className="request-item-list">
                   {requestData.items.map((item) => (
                     <div className="request-item-row" key={item.id}>
@@ -362,18 +433,14 @@ export default function RequestDetailsPage() {
                             <input type="checkbox" checked={Boolean(itemDrafts[item.id]?.allow_analog)} onChange={(event) => handleItemDraftChange(item.id, "allow_analog", event.target.checked)} />
                             Можно аналог
                           </label>
-                          <label className="request-item-comment">
-                            Комментарий к изменению
-                            <input value={itemDrafts[item.id]?.comment || ""} onChange={(event) => handleItemDraftChange(item.id, "comment", event.target.value)} />
-                          </label>
                           <button type="submit" disabled={saving}>Сохранить строку</button>
                         </form>
                       ) : null}
                     </div>
                   ))}
                 </div>
-              )}
             </div>
+            ) : null}
 
             <div className="card">
               <h2>Комментарии</h2>

@@ -1,11 +1,12 @@
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
 from django.db.models import Q
+from django.utils import timezone
 from rest_framework import generics
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import ServiceRequest, ServiceRequestItem, RequestComment, RequestEvent
+from .models import ServiceRequest, ServiceRequestItem, RequestComment, RequestEvent, RequestStatus
 
 
 from .serializers import (
@@ -16,6 +17,7 @@ from .serializers import (
     AssignRequestSerializer,
     ChangeStatusSerializer,
     ChangePrioritySerializer,
+    ConfirmReceiptSerializer,
     RequestItemWorkflowSerializer,
 )
 
@@ -29,6 +31,88 @@ from .permissions import (
 
 def health_check(request):
     return JsonResponse({"status": "ok", "service": "requests-service"})
+
+
+WORKFLOW_TRANSITIONS = {
+    RequestStatus.NEW: {RequestStatus.IN_REVIEW, RequestStatus.CANCELLED},
+    RequestStatus.IN_REVIEW: {RequestStatus.AWAITING_WAREHOUSE, RequestStatus.DIAGNOSTICS, RequestStatus.REJECTED, RequestStatus.CANCELLED},
+    RequestStatus.DIAGNOSTICS: {RequestStatus.AWAITING_WAREHOUSE, RequestStatus.AWAITING_REPLACEMENT, RequestStatus.IN_LAB, RequestStatus.CLOSED, RequestStatus.REJECTED},
+    RequestStatus.AWAITING_WAREHOUSE: {RequestStatus.RESERVED, RequestStatus.SHORTAGE, RequestStatus.AWAITING_PROCUREMENT, RequestStatus.AWAITING_REALLOCATION, RequestStatus.READY_TO_SHIP, RequestStatus.AWAITING_CONFIRMATION},
+    RequestStatus.AWAITING_PROCUREMENT: {RequestStatus.AWAITING_WAREHOUSE, RequestStatus.AWAITING_REPLACEMENT, RequestStatus.SHORTAGE, RequestStatus.CANCELLED},
+    RequestStatus.AWAITING_REPLACEMENT: {RequestStatus.AWAITING_WAREHOUSE, RequestStatus.AWAITING_PROCUREMENT, RequestStatus.SHORTAGE, RequestStatus.CANCELLED},
+    RequestStatus.AWAITING_REALLOCATION: {RequestStatus.AWAITING_WAREHOUSE, RequestStatus.RESERVED, RequestStatus.SHORTAGE, RequestStatus.CANCELLED},
+    RequestStatus.SHORTAGE: {RequestStatus.AWAITING_PROCUREMENT, RequestStatus.AWAITING_REPLACEMENT, RequestStatus.AWAITING_REALLOCATION, RequestStatus.PARTIALLY_FULFILLED, RequestStatus.CANCELLED},
+    RequestStatus.RESERVED: {RequestStatus.READY_TO_SHIP, RequestStatus.PARTIALLY_FULFILLED, RequestStatus.AWAITING_CONFIRMATION, RequestStatus.CANCELLED},
+    RequestStatus.READY_TO_SHIP: {RequestStatus.AWAITING_CONFIRMATION, RequestStatus.PARTIALLY_FULFILLED, RequestStatus.CANCELLED},
+    RequestStatus.PARTIALLY_FULFILLED: {RequestStatus.AWAITING_WAREHOUSE, RequestStatus.AWAITING_PROCUREMENT, RequestStatus.READY_TO_SHIP, RequestStatus.AWAITING_CONFIRMATION, RequestStatus.CLOSED},
+    RequestStatus.SHIPPED: {RequestStatus.AWAITING_CONFIRMATION, RequestStatus.RECEIVED},
+    RequestStatus.AWAITING_CONFIRMATION: {RequestStatus.RECEIVED},
+    RequestStatus.RECEIVED: {RequestStatus.CLOSED},
+    RequestStatus.IN_LAB: {RequestStatus.DIAGNOSTICS, RequestStatus.AWAITING_WAREHOUSE, RequestStatus.CLOSED},
+    RequestStatus.AWAITING_RETURN: {RequestStatus.DIAGNOSTICS, RequestStatus.CLOSED, RequestStatus.CANCELLED},
+}
+
+APPROVAL_TARGET_STATUSES = {
+    RequestStatus.AWAITING_WAREHOUSE,
+    RequestStatus.DIAGNOSTICS,
+    RequestStatus.REJECTED,
+    RequestStatus.CANCELLED,
+}
+
+WAREHOUSE_WORKFLOW_STATUSES = {
+    RequestStatus.AWAITING_WAREHOUSE,
+    RequestStatus.RESERVED,
+    RequestStatus.READY_TO_SHIP,
+    RequestStatus.AWAITING_CONFIRMATION,
+    RequestStatus.PARTIALLY_FULFILLED,
+    RequestStatus.SHORTAGE,
+    RequestStatus.AWAITING_PROCUREMENT,
+    RequestStatus.AWAITING_REPLACEMENT,
+    RequestStatus.AWAITING_REALLOCATION,
+}
+
+WAREHOUSE_WORKFLOW_ROLES = {"admin", "manager", "warehouse", "procurement"}
+
+PROCUREMENT_WORKFLOW_STATUSES = {
+    RequestStatus.AWAITING_PROCUREMENT,
+    RequestStatus.AWAITING_REPLACEMENT,
+}
+
+PROCUREMENT_WORKFLOW_ROLES = {"admin", "manager", "procurement"}
+
+
+def validate_status_transition(service_request, user, new_status):
+    old_status = service_request.status
+    if old_status == new_status:
+        return None
+    allowed = WORKFLOW_TRANSITIONS.get(old_status, set())
+    if new_status not in allowed:
+        return Response(
+            {"status": f"Недопустимый переход: {old_status} -> {new_status}."},
+            status=400,
+        )
+    if old_status == RequestStatus.IN_REVIEW and new_status in APPROVAL_TARGET_STATUSES and user.role not in ("admin", "manager"):
+        return Response(
+            {"status": "Согласовать заявку может только менеджер или администратор."},
+            status=403,
+        )
+    if (
+        old_status in WAREHOUSE_WORKFLOW_STATUSES
+        or new_status in WAREHOUSE_WORKFLOW_STATUSES
+    ) and user.role not in WAREHOUSE_WORKFLOW_ROLES:
+        return Response(
+            {"status": "Складские статусы могут менять только склад, снабжение, менеджер или администратор."},
+            status=403,
+        )
+    if (
+        old_status in PROCUREMENT_WORKFLOW_STATUSES
+        or new_status in PROCUREMENT_WORKFLOW_STATUSES
+    ) and user.role not in PROCUREMENT_WORKFLOW_ROLES:
+        return Response(
+            {"status": "Статусы снабжения могут менять только снабжение, менеджер или администратор."},
+            status=403,
+        )
+    return None
 
 
 class ServiceRequestListCreateView(generics.ListCreateAPIView):
@@ -195,6 +279,9 @@ class RequestChangeStatusView(APIView):
         old_status = service_request.status
         new_status = serializer.validated_data["status"]
         comment = serializer.validated_data.get("comment", "")
+        transition_error = validate_status_transition(service_request, request.user, new_status)
+        if transition_error:
+            return transition_error
 
         service_request.status = new_status
         service_request.save(update_fields=["status", "updated_at"])
@@ -214,6 +301,41 @@ class RequestChangeStatusView(APIView):
             service_request,
             context={"request": request},
         )
+        return Response(output_serializer.data, status=200)
+
+
+class RequestConfirmReceiptView(APIView):
+    permission_classes = [IsAuthenticatedServiceUser]
+
+    def post(self, request, pk):
+        service_request = get_object_or_404(ServiceRequest, pk=pk)
+        if request.user.role == "customer" and str(service_request.created_by_id) != str(request.user.id):
+            return Response({"detail": "Нет доступа."}, status=403)
+        if request.user.role != "customer" and request.user.role not in ("admin", "manager"):
+            return Response({"detail": "Подтвердить получение может заказчик, менеджер или администратор."}, status=403)
+
+        serializer = ConfirmReceiptSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        if service_request.status not in {RequestStatus.AWAITING_CONFIRMATION, RequestStatus.SHIPPED}:
+            return Response({"status": "Подтверждение доступно только после выдачи заказчику."}, status=400)
+
+        old_status = service_request.status
+        service_request.status = RequestStatus.RECEIVED
+        service_request.save(update_fields=["status", "updated_at"])
+
+        RequestEvent.objects.create(
+            request=service_request,
+            actor_id=request.user.id,
+            actor_username=request.user.username,
+            actor_role=request.user.role,
+            event_type="receipt_confirmed",
+            old_value=old_status,
+            new_value=RequestStatus.RECEIVED,
+            comment=serializer.validated_data.get("comment", "") or "Получение подтверждено заказчиком",
+        )
+
+        output_serializer = ServiceRequestDetailSerializer(service_request, context={"request": request})
         return Response(output_serializer.data, status=200)
 
 
@@ -289,3 +411,54 @@ class RequestItemWorkflowView(APIView):
 
         output_serializer = ServiceRequestDetailSerializer(service_request, context={"request": request})
         return Response(output_serializer.data, status=200)
+
+
+class ReactionNotificationsView(APIView):
+    permission_classes = [IsAuthenticatedServiceUser, IsInternalStaffUser]
+
+    def get(self, request):
+        if request.user.role not in ("admin", "manager"):
+            return Response([], status=200)
+
+        now = timezone.now()
+        deadline = now - timezone.timedelta(minutes=30)
+        expires_after = now - timezone.timedelta(hours=2, minutes=30)
+        qs = ServiceRequest.objects.filter(
+            status="new",
+            current_assignee_id__isnull=True,
+            created_at__lte=deadline,
+            created_at__gte=expires_after,
+        ).order_by("-created_at")
+
+        notifications = [
+            {
+                "id": f"reaction-{item.id}",
+                "request_id": str(item.id),
+                "number": item.number,
+                "title": item.title,
+                "message": f"{item.number} без реакции больше 30 минут",
+                "created_at": item.created_at,
+                "expires_at": item.created_at + timezone.timedelta(hours=2, minutes=30),
+            }
+            for item in qs
+        ]
+        confirmation_deadline = now - timezone.timedelta(hours=24)
+        confirmation_expires_after = now - timezone.timedelta(hours=26)
+        confirmation_qs = ServiceRequest.objects.filter(
+            status=RequestStatus.AWAITING_CONFIRMATION,
+            updated_at__lte=confirmation_deadline,
+            updated_at__gte=confirmation_expires_after,
+        ).order_by("-updated_at")
+        notifications.extend([
+            {
+                "id": f"confirmation-{item.id}",
+                "request_id": str(item.id),
+                "number": item.number,
+                "title": item.title,
+                "message": f"{item.number} ожидает подтверждения получения больше суток",
+                "created_at": item.updated_at,
+                "expires_at": item.updated_at + timezone.timedelta(hours=26),
+            }
+            for item in confirmation_qs
+        ])
+        return Response(notifications, status=200)

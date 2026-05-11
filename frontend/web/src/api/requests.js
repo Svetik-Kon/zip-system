@@ -35,7 +35,17 @@ export async function changeRequestPriority(requestId, payload) {
   return response.data;
 }
 
+export async function confirmRequestReceipt(requestId, payload = {}) {
+  const response = await apiClient.post(`/api/requests/${requestId}/confirm-receipt/`, payload);
+  return response.data;
+}
+
 export async function updateRequestItemWorkflow(requestId, itemId, payload) {
   const response = await apiClient.patch(`/api/requests/${requestId}/items/${itemId}/workflow/`, payload);
+  return response.data;
+}
+
+export async function getReactionNotifications() {
+  const response = await apiClient.get("/api/notifications/reaction-overdue/");
   return response.data;
 }

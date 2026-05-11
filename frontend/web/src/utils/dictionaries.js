@@ -19,6 +19,7 @@ export const REQUEST_STATUS_LABELS = {
   reserved: "В резерве",
   ready_to_ship: "Готова к выдаче",
   shipped: "Отгружена",
+  awaiting_confirmation: "Ожидает подтверждения",
   in_lab: "В лаборатории",
   received: "Получено",
   closed: "Закрыта",

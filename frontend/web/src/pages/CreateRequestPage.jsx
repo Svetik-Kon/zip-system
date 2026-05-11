@@ -18,6 +18,7 @@ export default function CreateRequestPage() {
     equipment_model: "",
     serial_number: "",
     site_name: "",
+    allow_analog: false,
   });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -43,6 +44,7 @@ export default function CreateRequestPage() {
         equipment_model: form.equipment_model,
         serial_number: form.serial_number,
         site_name: form.site_name,
+        allow_analog: form.request_type === "equipment_replacement" ? form.allow_analog : false,
         items: [],
       });
       navigate(`/requests/${created.id}`);
@@ -66,6 +68,12 @@ export default function CreateRequestPage() {
             <label>Модель<input name="equipment_model" value={form.equipment_model} onChange={handleChange} /></label>
             <label>Серийный номер<input name="serial_number" value={form.serial_number} onChange={handleChange} /></label>
             <label>Площадка / объект<input name="site_name" value={form.site_name} onChange={handleChange} /></label>
+            {form.request_type === "equipment_replacement" ? (
+              <label className="checkbox form-checkbox">
+                <input name="allow_analog" type="checkbox" checked={form.allow_analog} onChange={handleChange} />
+                Возможен аналог
+              </label>
+            ) : null}
             <label>Описание<textarea name="description" value={form.description} onChange={handleChange} /></label>
             {error ? <div className="error">{error}</div> : null}
             <button type="submit" disabled={loading}>{loading ? "Создание..." : "Создать заявку"}</button>

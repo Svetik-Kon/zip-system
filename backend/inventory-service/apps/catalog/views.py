@@ -36,10 +36,11 @@ class IsInternalOrReadOnly(permissions.BasePermission):
     def has_permission(self, request, view):
         if request.method in permissions.SAFE_METHODS:
             return bool(request.user and request.user.is_authenticated)
+        write_roles = getattr(view, "write_roles", {"admin", "warehouse"})
         return bool(
             request.user
             and request.user.is_authenticated
-            and request.user.role in {"admin", "warehouse", "engineer", "procurement"}
+            and request.user.role in write_roles
         )
 
 
@@ -102,6 +103,7 @@ class ItemAnalogListCreateView(generics.ListCreateAPIView):
 class CustomerContractListCreateView(generics.ListCreateAPIView):
     serializer_class = CustomerContractSerializer
     permission_classes = [IsInternalOrReadOnly]
+    write_roles = {"admin", "manager"}
 
     def get_queryset(self):
         CustomerContract.objects.filter(
@@ -127,6 +129,7 @@ class CustomerContractDetailView(generics.RetrieveUpdateAPIView):
     queryset = CustomerContract.objects.all()
     serializer_class = CustomerContractSerializer
     permission_classes = [IsInternalOrReadOnly]
+    write_roles = {"admin", "manager"}
 
 
 class EquipmentUnitListCreateView(generics.ListCreateAPIView):

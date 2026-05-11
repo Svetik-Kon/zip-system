@@ -26,6 +26,7 @@ const statusTone = {
   awaiting_return: "yellow",
   partially_fulfilled: "blue",
   reserved: "blue",
+  awaiting_confirmation: "blue",
   ready_to_ship: "green",
   shipped: "green",
   closed: "neutral",
@@ -35,6 +36,7 @@ const statusTone = {
 
 const activeWorkStatuses = [
   "diagnostics",
+  "in_review",
   "awaiting_warehouse",
   "awaiting_procurement",
   "awaiting_return",
@@ -44,6 +46,7 @@ const activeWorkStatuses = [
   "shortage",
   "reserved",
   "ready_to_ship",
+  "awaiting_confirmation",
 ];
 
 export default function RequestsPage() {

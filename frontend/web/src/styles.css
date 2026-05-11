@@ -106,6 +106,70 @@ button:disabled {
   white-space: nowrap;
 }
 
+.notification-wrap {
+  position: relative;
+}
+
+.notification-button {
+  position: relative;
+}
+
+.notification-button span {
+  align-items: center;
+  background: #c1121f;
+  border: 1px solid #fff;
+  border-radius: 999px;
+  color: #fff;
+  display: inline-flex;
+  font-size: 10px;
+  font-weight: 800;
+  height: 17px;
+  justify-content: center;
+  min-width: 17px;
+  padding: 0 4px;
+  position: absolute;
+  right: -6px;
+  top: -6px;
+}
+
+.notification-menu {
+  background: #fffdf7;
+  border: 1px solid #222;
+  border-radius: 8px;
+  box-shadow: 0 16px 36px rgb(0 0 0 / 18%);
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  width: min(340px, calc(100vw - 24px));
+  z-index: 25;
+}
+
+.notification-menu p {
+  color: #555;
+  margin: 0;
+}
+
+.notification-menu a {
+  background: #fff;
+  border: 1px solid #d9d9d2;
+  border-radius: 8px;
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
+}
+
+.notification-menu span,
+.notification-menu small {
+  overflow-wrap: anywhere;
+}
+
+.notification-menu small {
+  color: #555;
+}
+
 .sidebar {
   grid-row: 2;
   padding: 14px 10px;
@@ -330,6 +394,11 @@ select[multiple] {
 .checkbox input {
   width: auto;
   margin: 0;
+}
+
+.form-checkbox {
+  align-self: end;
+  min-height: 38px;
 }
 
 .field-note {
