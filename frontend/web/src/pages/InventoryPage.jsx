@@ -12,7 +12,10 @@ import {
   releaseReservation,
   updateEquipmentUnit,
 } from "../api/inventory";
+import { getRequests } from "../api/requests";
+import LookupSelect from "../components/LookupSelect";
 import Navbar from "../components/Navbar";
+import Pagination from "../components/Pagination";
 import { getMe } from "../utils/auth";
 
 const UNIT_STATUSES = {
@@ -38,6 +41,7 @@ const CONTRACT_STATUS_LABELS = {
 };
 
 const todayIso = () => new Date().toLocaleDateString("en-CA");
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const isContractBlocked = (contract) => Boolean(contract && (
   ["expired", "closed"].includes(contract.status)
@@ -79,6 +83,7 @@ export default function InventoryPage() {
   const [reservations, setReservations] = useState([]);
   const [contracts, setContracts] = useState([]);
   const [equipmentUnits, setEquipmentUnits] = useState([]);
+  const [requests, setRequests] = useState([]);
   const [filters, setFilters] = useState({ search: "", location: "", available: "" });
   const [activeModal, setActiveModal] = useState("");
   const [detailOpen, setDetailOpen] = useState(false);
@@ -86,6 +91,11 @@ export default function InventoryPage() {
   const [selectedUnitId, setSelectedUnitId] = useState("");
   const [serialSearch, setSerialSearch] = useState("");
   const [reservationSearch, setReservationSearch] = useState("");
+  const [reserveUnitSearch, setReserveUnitSearch] = useState("");
+  const [requestLookupResults, setRequestLookupResults] = useState([]);
+  const [requestLookupLoading, setRequestLookupLoading] = useState(false);
+  const [inventoryPage, setInventoryPage] = useState(1);
+  const [inventoryPageSize, setInventoryPageSize] = useState(30);
   const [locationForm, setLocationForm] = useState({ name: "", location_type: "warehouse", address: "" });
   const [reserveForm, setReserveForm] = useState({
     reservation_type: "quantity",
@@ -93,7 +103,7 @@ export default function InventoryPage() {
     location: "",
     quantity: 1,
     equipment_units: [],
-    request_id: "",
+    request_number: "",
     customer_name: "",
     reserved_until: "",
     contract: "",
@@ -154,6 +164,15 @@ export default function InventoryPage() {
     return filteredItems.find((item) => item.id === selectedItemId) || filteredItems[0];
   }, [filteredItems, selectedItemId]);
 
+  useEffect(() => {
+    setInventoryPage(1);
+  }, [filters.search, filters.location, filters.available]);
+
+  const pagedItems = useMemo(() => {
+    const start = (inventoryPage - 1) * inventoryPageSize;
+    return filteredItems.slice(start, start + inventoryPageSize);
+  }, [filteredItems, inventoryPage, inventoryPageSize]);
+
   const getReservationAvailableQuantity = (reservation) => {
     const balance = selectedItem?.balances.find((entry) => entry.location === reservation.location);
     return Number(balance?.available_quantity || 0);
@@ -190,6 +209,15 @@ export default function InventoryPage() {
     ].some((value) => String(value || "").toLowerCase().includes(text)));
   }, [selectedItem, serialSearch]);
 
+  const contractsById = useMemo(() => new Map(contracts.map((contract) => [contract.id, contract])), [contracts]);
+  const requestsById = useMemo(() => new Map(requests.map((request) => [request.id, request])), [requests]);
+  const contractFileLink = (contractId) => inventoryFileUrl(contractsById.get(contractId)?.file);
+  const reservationRequestLabel = (reservation) => {
+    if (!reservation.request_id) return "Заявка не указана";
+    const request = requestsById.get(reservation.request_id);
+    return request?.number || reservation.request_id;
+  };
+
   const filteredSelectedReservations = useMemo(() => {
     if (!selectedItem) return [];
     const text = reservationSearch.trim().toLowerCase();
@@ -200,11 +228,12 @@ export default function InventoryPage() {
       reservation.contract_number,
       reservation.location_name,
       reservation.reserved_until,
+      reservationRequestLabel(reservation),
       reservation.comment,
       reservation.equipment_unit_serials?.join(" "),
       reservation.quantity,
     ].some((value) => String(value || "").toLowerCase().includes(text)));
-  }, [selectedItem, reservationSearch]);
+  }, [selectedItem, reservationSearch, requestsById]);
 
   const unitHardReserved = (unit) => selectedItem?.reservations.some((reservation) => (
     reservation.is_hard
@@ -214,8 +243,6 @@ export default function InventoryPage() {
     )
   ));
 
-  const contractsById = useMemo(() => new Map(contracts.map((contract) => [contract.id, contract])), [contracts]);
-  const contractFileLink = (contractId) => inventoryFileUrl(contractsById.get(contractId)?.file);
   const reservationHasBlockedContract = (reservation) => {
     const contract = contractsById.get(reservation.contract);
     return isContractBlocked(contract) || ["expired", "closed"].includes(reservation.contract_status) || (
@@ -233,11 +260,83 @@ export default function InventoryPage() {
     }));
   };
 
+  useEffect(() => {
+    const value = reserveForm.request_number.trim();
+    if (value.length < 2) {
+      if (!value) setRequestLookupResults([]);
+      return undefined;
+    }
+
+    const timer = setTimeout(async () => {
+      try {
+        setRequestLookupLoading(true);
+        setRequestLookupResults(await getRequests({ search: value }));
+      } catch {
+        setRequestLookupResults([]);
+      } finally {
+        setRequestLookupLoading(false);
+      }
+    }, 250);
+
+    return () => clearTimeout(timer);
+  }, [reserveForm.request_number]);
+
   const availableUnits = useMemo(() => equipmentUnits.filter((unit) => (
     ["available", "needs_check"].includes(unit.status)
     && (!reserveForm.item || unit.item === reserveForm.item)
     && (!reserveForm.location || unit.location === reserveForm.location)
   )), [equipmentUnits, reserveForm.item, reserveForm.location]);
+
+  const filteredAvailableUnits = useMemo(() => {
+    const text = reserveUnitSearch.trim().toLowerCase();
+    return availableUnits.filter((unit) => !text || [
+      unit.serial_number,
+      unit.inventory_number,
+      unit.location_name,
+      UNIT_STATUSES[unit.status],
+      unit.status,
+      unit.customer_name,
+      unit.contract_number,
+    ].some((value) => String(value || "").toLowerCase().includes(text))).slice(0, 40);
+  }, [availableUnits, reserveUnitSearch]);
+
+  const itemLookupOptions = useMemo(() => itemRows.map((item) => ({
+    value: item.id,
+    label: `${item.sku} - ${item.name}`,
+    meta: `${TRACKING_LABELS[item.tracking_type] || item.tracking_type} · доступно ${item.available}`,
+    searchText: [item.manufacturer, item.equipment_model_name, item.locationsText, item.serialsText].join(" "),
+  })), [itemRows]);
+
+  const locationLookupOptions = useMemo(() => locations.map((location) => {
+    const selectedItemBalance = reserveForm.item
+      ? balances.find((balance) => balance.item === reserveForm.item && balance.location === location.id)
+      : null;
+
+    return {
+      value: location.id,
+      label: location.name,
+      meta: selectedItemBalance
+        ? `доступно ${selectedItemBalance.available_quantity}, резерв ${selectedItemBalance.reserved_quantity}`
+        : location.address || location.location_type,
+      searchText: [location.address, location.location_type].join(" "),
+      disabled: Boolean(reserveForm.item && !selectedItemBalance),
+    };
+  }), [locations, balances, reserveForm.item]);
+
+  const contractLookupOptions = useMemo(() => contracts.map((contract) => ({
+    value: contract.id,
+    label: `${contract.customer_name} / ${contract.number}`,
+    meta: CONTRACT_STATUS_LABELS[contract.status] || contract.status,
+    searchText: [contract.customer_name, contract.number, contract.comment].join(" "),
+    disabled: isContractBlocked(contract),
+  })), [contracts]);
+
+  const requestLookupOptions = useMemo(() => requestLookupResults.map((request) => ({
+    value: request.number,
+    label: request.number,
+    meta: `${request.title || "Без заголовка"} · ${request.created_by_username || "-"}`,
+    searchText: [request.title, request.equipment_name, request.serial_number, request.created_by_username].join(" "),
+  })), [requestLookupResults]);
 
   const summary = useMemo(() => ({
     positions: items.length,
@@ -251,13 +350,14 @@ export default function InventoryPage() {
     try {
       setLoading(true);
       setError("");
-      const [itemsResult, locationsResult, balancesResult, reservationsResult, contractsResult, unitsResult] = await Promise.all([
+      const [itemsResult, locationsResult, balancesResult, reservationsResult, contractsResult, unitsResult, requestsResult] = await Promise.all([
         getCatalogItems(),
         getLocations(),
         getBalances(),
         getReservations(),
         getContracts(),
         getEquipmentUnits(),
+        getRequests(),
       ]);
       setItems(itemsResult);
       setLocations(locationsResult);
@@ -265,6 +365,7 @@ export default function InventoryPage() {
       setReservations(reservationsResult);
       setContracts(contractsResult);
       setEquipmentUnits(unitsResult);
+      setRequests(requestsResult);
     } catch (err) {
       setError(err?.response?.data ? JSON.stringify(err.response.data) : "Не удалось загрузить склад.");
     } finally {
@@ -282,18 +383,41 @@ export default function InventoryPage() {
     await loadAll();
   };
 
-  const buildReservationPayload = (data) => {
+  const resolveRequestId = async (requestNumber) => {
+    const value = requestNumber.trim();
+    if (!value) return "";
+    if (uuidPattern.test(value)) return value;
+
+    const foundRequests = await getRequests({ search: value });
+    const exactMatch = foundRequests.find((item) => item.number?.toLowerCase() === value.toLowerCase());
+    const selectedRequest = exactMatch || (foundRequests.length === 1 ? foundRequests[0] : null);
+
+    if (!selectedRequest) {
+      throw new Error("Заявка с таким номером не найдена. Проверь номер вида REQ-00001.");
+    }
+
+    return selectedRequest.id;
+  };
+
+  const buildReservationPayload = async (data) => {
     const formData = new FormData();
+    const requestId = await resolveRequestId(data.request_number);
+    if (data.reserved_until && data.reserved_until < todayIso()) {
+      throw new Error("Дата резерва не может быть раньше сегодняшнего дня.");
+    }
     formData.append("reservation_type", data.reservation_type);
     formData.append("item", data.item);
     formData.append("location", data.location);
     if (data.reservation_type === "serial") {
+      if (!data.equipment_units.length) {
+        throw new Error("Выберите хотя бы один серийный номер для резерва.");
+      }
       data.equipment_units.forEach((unitId) => formData.append("equipment_units", unitId));
       formData.append("quantity", data.equipment_units.length || 1);
     } else {
       formData.append("quantity", Number(data.quantity));
     }
-    appendIfValue(formData, "request_id", data.request_id);
+    appendIfValue(formData, "request_id", requestId);
     appendIfValue(formData, "customer_name", data.customer_name);
     appendIfValue(formData, "reserved_until", data.reserved_until);
     appendIfValue(formData, "contract", data.contract);
@@ -305,24 +429,31 @@ export default function InventoryPage() {
 
   const handleReserveSubmit = async (event) => {
     event.preventDefault();
-    await createReservation(buildReservationPayload(reserveForm));
-    setReserveForm({
-      reservation_type: "quantity",
-      item: "",
-      location: "",
-      quantity: 1,
-      equipment_units: [],
-      request_id: "",
-      customer_name: "",
-      reserved_until: "",
-      contract: "",
-      contract_number: "",
-      is_hard: false,
-      comment: "",
-    });
-    event.target.reset();
-    closeModal();
-    await loadAll();
+    const formElement = event.currentTarget;
+
+    try {
+      setError("");
+      await createReservation(await buildReservationPayload(reserveForm));
+      setReserveForm({
+        reservation_type: "quantity",
+        item: "",
+        location: "",
+        quantity: 1,
+        equipment_units: [],
+        request_number: "",
+        customer_name: "",
+        reserved_until: "",
+        contract: "",
+        contract_number: "",
+        is_hard: false,
+        comment: "",
+      });
+      formElement.reset();
+      closeModal();
+      await loadAll();
+    } catch (err) {
+      setError(err?.response?.data ? JSON.stringify(err.response.data) : err.message || "Не удалось создать резерв.");
+    }
   };
 
   const handleReleaseReservation = async (reservation, status = "released", quantity = null) => {
@@ -395,7 +526,7 @@ export default function InventoryPage() {
       location: firstBalance?.location || "",
       quantity: 1,
       equipment_units: [],
-      request_id: "",
+      request_number: "",
       customer_name: "",
       reserved_until: "",
       contract: "",
@@ -403,6 +534,7 @@ export default function InventoryPage() {
       is_hard: item?.tracking_type === "serial",
       comment: "",
     });
+    setReserveUnitSearch("");
     setActiveModal("reserve");
   };
 
@@ -413,7 +545,7 @@ export default function InventoryPage() {
       location: unit.location || "",
       quantity: 1,
       equipment_units: [unit.id],
-      request_id: "",
+      request_number: "",
       customer_name: "",
       reserved_until: "",
       contract: "",
@@ -421,17 +553,17 @@ export default function InventoryPage() {
       is_hard: true,
       comment: "",
     });
+    setReserveUnitSearch(unit.serial_number || "");
     setActiveModal("reserve");
   };
 
-  const itemOptions = items.map((item) => <option key={item.id} value={item.id}>{item.sku} - {item.name}</option>);
-  const locationOptions = locations.map((location) => <option key={location.id} value={location.id}>{location.name}</option>);
+  const locationFilterOptions = useMemo(() => locations.map((location) => ({
+    value: location.id,
+    label: location.name,
+    meta: location.address || location.location_type || "",
+    searchText: [location.name, location.address, location.location_type].filter(Boolean).join(" "),
+  })), [locations]);
   const reserveItem = items.find((item) => item.id === reserveForm.item);
-  const contractOptions = contracts.map((contract) => (
-    <option key={contract.id} value={contract.id} disabled={isContractBlocked(contract)}>
-      {contract.customer_name} / {contract.number} ({CONTRACT_STATUS_LABELS[contract.status] || contract.status})
-    </option>
-  ));
   const renderModal = () => {
     if (!activeModal || !canEditInventory) return null;
     const titles = {
@@ -469,44 +601,116 @@ export default function InventoryPage() {
                   ? "Для серийной позиции резервируется конкретный серийный номер."
                   : "Для количественной позиции резервируется количество."}
               </div>
-              <select
+              <LookupSelect
+                label="Позиция"
                 value={reserveForm.item}
-                onChange={(event) => {
-                  const item = items.find((entry) => entry.id === event.target.value);
+                options={itemLookupOptions}
+                placeholder="SKU, название, модель или производитель"
+                required
+                onChange={(value) => {
+                  const item = items.find((entry) => entry.id === value);
                   setReserveForm((prev) => ({
                     ...prev,
-                    item: event.target.value,
+                    item: value,
+                    location: "",
                     reservation_type: item?.tracking_type === "serial" ? "serial" : "quantity",
                     equipment_units: [],
                   }));
+                  setReserveUnitSearch("");
                 }}
+              />
+              <LookupSelect
+                label="Локация"
+                value={reserveForm.location}
+                options={locationLookupOptions}
+                placeholder="Название склада или площадки"
                 required
-              >
-                <option value="">Позиция</option>{itemOptions}
-              </select>
-              <select value={reserveForm.location} onChange={(event) => setReserveForm((prev) => ({ ...prev, location: event.target.value, equipment_units: [] }))} required><option value="">Локация</option>{locationOptions}</select>
+                disabled={!reserveForm.item}
+                emptyText={reserveForm.item ? "По выбранной позиции нет остатков на локациях" : "Сначала выберите позицию"}
+                onChange={(value) => {
+                  setReserveForm((prev) => ({ ...prev, location: value, equipment_units: [] }));
+                  setReserveUnitSearch("");
+                }}
+              />
               {reserveForm.reservation_type === "serial" ? (
-                <label>
-                  Серийные номера
-                  <select multiple value={reserveForm.equipment_units} onChange={(event) => setReserveForm((prev) => ({ ...prev, equipment_units: Array.from(event.target.selectedOptions, (option) => option.value) }))} required>
-                    {availableUnits.map((unit) => <option key={unit.id} value={unit.id}>{unit.serial_number} {unit.inventory_number ? `/${unit.inventory_number}` : ""}</option>)}
-                  </select>
-                </label>
+                <div className="serial-picker">
+                  <label>
+                    Серийные номера
+                    <input
+                      value={reserveUnitSearch}
+                      onChange={(event) => setReserveUnitSearch(event.target.value)}
+                      placeholder="Поиск по серийному, инвентарному номеру или локации"
+                    />
+                  </label>
+                  <div className="serial-picker-list">
+                    {filteredAvailableUnits.map((unit) => (
+                      <label className="serial-picker-row" key={unit.id}>
+                        <input
+                          type="checkbox"
+                          checked={reserveForm.equipment_units.includes(unit.id)}
+                          onChange={(event) => setReserveForm((prev) => ({
+                            ...prev,
+                            equipment_units: event.target.checked
+                              ? [...prev.equipment_units, unit.id]
+                              : prev.equipment_units.filter((id) => id !== unit.id),
+                          }))}
+                        />
+                        <span>
+                          <strong>{unit.serial_number}</strong>
+                          <span>{[unit.inventory_number, unit.location_name, UNIT_STATUSES[unit.status] || unit.status].filter(Boolean).join(" / ")}</span>
+                        </span>
+                      </label>
+                    ))}
+                    {!filteredAvailableUnits.length ? <span className="lookup-empty">Свободные серийные номера не найдены.</span> : null}
+                  </div>
+                  {reserveForm.equipment_units.length ? (
+                    <div className="selected-chip-list">
+                      {reserveForm.equipment_units.map((unitId) => {
+                        const unit = equipmentUnits.find((entry) => entry.id === unitId);
+                        return (
+                          <button
+                            key={unitId}
+                            type="button"
+                            className="selected-chip"
+                            onClick={() => setReserveForm((prev) => ({ ...prev, equipment_units: prev.equipment_units.filter((id) => id !== unitId) }))}
+                          >
+                            {unit?.serial_number || unitId} <span>x</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </div>
               ) : (
                 <label>Количество<input type="number" min="1" value={reserveForm.quantity} onChange={(event) => setReserveForm((prev) => ({ ...prev, quantity: event.target.value }))} /></label>
               )}
-              <select value={reserveForm.contract} onChange={(event) => handleContractSelect(event.target.value)}><option value="">Договор</option>{contractOptions}</select>
+              <LookupSelect
+                label="Договор"
+                value={reserveForm.contract}
+                options={contractLookupOptions}
+                placeholder="Заказчик или номер договора"
+                emptyText="Договоры не найдены"
+                onChange={(value) => handleContractSelect(value)}
+              />
               {contractFileLink(reserveForm.contract) ? (
                 <a className="button-link secondary" href={contractFileLink(reserveForm.contract)} target="_blank" rel="noreferrer">Открыть файл договора</a>
               ) : null}
               <input placeholder="Заказчик" value={reserveForm.customer_name} onChange={(event) => setReserveForm((prev) => ({ ...prev, customer_name: event.target.value }))} />
-              <label>Зарезервировано до<input type="date" value={reserveForm.reserved_until} onChange={(event) => setReserveForm((prev) => ({ ...prev, reserved_until: event.target.value }))} /></label>
+              <label>Зарезервировано до<input type="date" min={todayIso()} value={reserveForm.reserved_until} onChange={(event) => setReserveForm((prev) => ({ ...prev, reserved_until: event.target.value }))} /></label>
               <input placeholder="Номер договора, если нет в справочнике" value={reserveForm.contract_number} onChange={(event) => setReserveForm((prev) => ({ ...prev, contract_number: event.target.value }))} />
               <label className="checkbox">
                 <input type="checkbox" checked={reserveForm.is_hard} onChange={(event) => setReserveForm((prev) => ({ ...prev, is_hard: event.target.checked }))} />
                 Жестко закрепить: нельзя выдать другому заказчику или договору
               </label>
-              <input placeholder="UUID заявки" value={reserveForm.request_id} onChange={(event) => setReserveForm((prev) => ({ ...prev, request_id: event.target.value }))} />
+              <LookupSelect
+                label="Заявка"
+                value={reserveForm.request_number}
+                options={requestLookupOptions}
+                placeholder={requestLookupLoading ? "Поиск..." : "Номер, заголовок или оборудование"}
+                emptyText="Заявки не найдены"
+                onChange={(value) => setReserveForm((prev) => ({ ...prev, request_number: value }))}
+                onQueryChange={(value) => setReserveForm((prev) => ({ ...prev, request_number: value }))}
+              />
               <textarea placeholder="Комментарий" value={reserveForm.comment} onChange={(event) => setReserveForm((prev) => ({ ...prev, comment: event.target.value }))} />
               <button type="submit">Зарезервировать</button>
             </form>
@@ -540,7 +744,14 @@ export default function InventoryPage() {
             value={filters.search}
             onChange={(event) => setFilters((prev) => ({ ...prev, search: event.target.value }))}
           />
-          <select value={filters.location} onChange={(event) => setFilters((prev) => ({ ...prev, location: event.target.value }))}><option value="">Все локации</option>{locationOptions}</select>
+          <LookupSelect
+            label=""
+            value={filters.location}
+            options={locationFilterOptions}
+            onChange={(value) => setFilters((prev) => ({ ...prev, location: value }))}
+            placeholder="Все локации"
+            emptyText="Локации не найдены"
+          />
           <select value={filters.available} onChange={(event) => setFilters((prev) => ({ ...prev, available: event.target.value }))}><option value="">Все остатки</option><option value="true">Только доступные</option></select>
         </div>
 
@@ -565,7 +776,7 @@ export default function InventoryPage() {
               <span title="Можно использовать сейчас: всего минус резерв.">Доступно</span>
             </div>
             <div className="item-register-list">
-              {filteredItems.map((item) => (
+              {pagedItems.map((item) => (
                 <button
                   className={`item-register-row ${selectedItem?.id === item.id ? "active" : ""}`}
                   key={item.id}
@@ -588,6 +799,16 @@ export default function InventoryPage() {
                 </button>
               ))}
             </div>
+            <Pagination
+              total={filteredItems.length}
+              page={inventoryPage}
+              pageSize={inventoryPageSize}
+              onPageChange={setInventoryPage}
+              onPageSizeChange={(size) => {
+                setInventoryPageSize(size);
+                setInventoryPage(1);
+              }}
+            />
             {!filteredItems.length ? <p>Позиции не найдены.</p> : null}
           </section>
 
@@ -681,7 +902,6 @@ export default function InventoryPage() {
                         </dd>
                       </div>
                       <div><dt>До</dt><dd>{selectedUnit.reserved_until || "-"}</dd></div>
-                      <div><dt>Ответственный</dt><dd>{selectedUnit.responsible_person || "-"}</dd></div>
                     </dl>
                     <div className="detail-actions">
                       {canEditInventory && selectedUnit.status === "available" ? <button type="button" onClick={() => openReserveForUnit(selectedUnit)}>Зарезервировать этот серийник</button> : null}
@@ -694,7 +914,10 @@ export default function InventoryPage() {
                       {selectedUnitReservations.map((reservation) => (
                         <div className="linked-reservation" key={reservation.id}>
                           <h3>Резерв серийника</h3>
-                          <p>{reservation.customer_name || "Заказчик не указан"} · {reservation.contract_display || reservation.contract_number || "Договор не указан"} · до {reservation.reserved_until || "-"}</p>
+                          <dl className="equipment-details">
+                            <div><dt>Заявка</dt><dd>{reservationRequestLabel(reservation)}</dd></div>
+                            <div><dt>До</dt><dd>{reservation.reserved_until || "-"}</dd></div>
+                          </dl>
                           {reservationHasBlockedContract(reservation) ? (
                             <p className="reservation-warning">Договор истек или закрыт: резерв нужно отозвать, продлить или перенести.</p>
                           ) : null}
@@ -731,6 +954,8 @@ export default function InventoryPage() {
                           ) : null}
                         </small>
                         <span className="reservation-meta">
+                          {reservationRequestLabel(reservation)}
+                          <br />
                           {reservation.equipment_unit_serials?.join(", ") || `${reservation.quantity} шт.`}
                           <br />
                           до {reservation.reserved_until || "-"}

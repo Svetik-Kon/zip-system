@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { getRequests } from "../api/requests";
 import Navbar from "../components/Navbar";
+import Pagination from "../components/Pagination";
 import {
   REQUEST_PRIORITY_LABELS,
   REQUEST_STATUS_LABELS,
@@ -60,6 +61,8 @@ export default function RequestsPage() {
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(30);
 
   const assignedToMe = useMemo(() => {
     return new URLSearchParams(location.search).get("assigned_to_me") === "true";
@@ -83,6 +86,7 @@ export default function RequestsPage() {
       setLoading(true);
       setError("");
       setRequests(await getRequests(buildParams()));
+      setPage(1);
     } catch {
       setError("Не удалось загрузить заявки.");
     } finally {
@@ -92,8 +96,14 @@ export default function RequestsPage() {
 
   const resetFilters = () => {
     setFilters({ search: "", status: "", request_type: "", priority: "" });
+    setPage(1);
     setTimeout(() => loadRequests(), 0);
   };
+
+  const pagedRequests = useMemo(() => {
+    const start = (page - 1) * pageSize;
+    return requests.slice(start, start + pageSize);
+  }, [requests, page, pageSize]);
 
   return (
     <Navbar>
@@ -157,7 +167,7 @@ export default function RequestsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {requests.map((item) => (
+                  {pagedRequests.map((item) => (
                     <tr key={item.id}>
                       <td><Link to={`/requests/${item.id}`}>{item.number}</Link></td>
                       <td>{item.title}</td>
@@ -172,6 +182,16 @@ export default function RequestsPage() {
                 </tbody>
               </table>
             </div>
+            <Pagination
+              total={requests.length}
+              page={page}
+              pageSize={pageSize}
+              onPageChange={setPage}
+              onPageSizeChange={(size) => {
+                setPageSize(size);
+                setPage(1);
+              }}
+            />
             {!requests.length ? <p>Заявок по выбранным условиям нет.</p> : null}
           </div>
         ) : null}

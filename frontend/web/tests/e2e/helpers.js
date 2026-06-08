@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 export const authUrl = process.env.E2E_AUTH_URL || "http://localhost:8001";
+export const inventoryUrl = process.env.E2E_INVENTORY_URL || "http://localhost:8003";
 
 export const users = {
   admin: {
@@ -82,6 +83,84 @@ export async function createRequestViaApi(request, customerSession, overrides = 
       ...overrides,
     },
   });
+  expect(response.ok()).toBeTruthy();
+  return response.json();
+}
+
+export async function createQuantityStockFixture(request, warehouseSession, prefix = "E2E") {
+  const marker = `${prefix}-${Date.now()}`;
+  const headers = { Authorization: `Bearer ${warehouseSession.auth.access}` };
+
+  const itemResponse = await request.post(`${inventoryUrl}/api/catalog/items/`, {
+    headers,
+    data: {
+      sku: marker,
+      name: `Тестовая позиция ЗИП ${marker}`,
+      manufacturer: "E2E",
+      unit: "pcs",
+      item_type: "spare_part",
+      tracking_type: "quantity",
+      description: "Создано автоматическим e2e-сценарием",
+    },
+  });
+  expect(itemResponse.ok()).toBeTruthy();
+  const item = await itemResponse.json();
+
+  const sourceResponse = await request.post(`${inventoryUrl}/api/locations/`, {
+    headers,
+    data: {
+      name: `E2E склад ${marker}`,
+      location_type: "warehouse",
+      address: "E2E source",
+    },
+  });
+  expect(sourceResponse.ok()).toBeTruthy();
+  const sourceLocation = await sourceResponse.json();
+
+  const destinationResponse = await request.post(`${inventoryUrl}/api/locations/`, {
+    headers,
+    data: {
+      name: `E2E транзит ${marker}`,
+      location_type: "transit",
+      address: "E2E destination",
+    },
+  });
+  expect(destinationResponse.ok()).toBeTruthy();
+  const destinationLocation = await destinationResponse.json();
+
+  const receiptResponse = await request.post(`${inventoryUrl}/api/transactions/`, {
+    headers,
+    data: {
+      operation_kind: "supplier_receipt",
+      source_location: null,
+      destination_location: sourceLocation.id,
+      related_request_id: null,
+      customer_name: "",
+      contract: null,
+      responsible_person: "",
+      due_date: null,
+      reason: `E2E приемка ${marker}`,
+      comment: "Начальный остаток для e2e-сценария",
+      items: [{
+        item: item.id,
+        quantity: 5,
+        equipment_units: [],
+        reservation: null,
+        serial_numbers: [],
+      }],
+    },
+  });
+  expect(receiptResponse.ok()).toBeTruthy();
+
+  return { marker, item, sourceLocation, destinationLocation, headers };
+}
+
+export async function createInventoryTransaction(request, warehouseSession, payload) {
+  const response = await request.post(`${inventoryUrl}/api/transactions/`, {
+    headers: { Authorization: `Bearer ${warehouseSession.auth.access}` },
+    data: payload,
+  });
+
   expect(response.ok()).toBeTruthy();
   return response.json();
 }

@@ -11,6 +11,7 @@ import {
   updateOrganizationRequest,
 } from "../api/auth";
 import Navbar from "../components/Navbar";
+import Pagination from "../components/Pagination";
 import { getMe } from "../utils/auth";
 import { ROLE_LABELS, getRoleLabel } from "../utils/dictionaries";
 
@@ -41,6 +42,8 @@ export default function AdminUsersPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(30);
 
   useEffect(() => {
     loadAll();
@@ -77,6 +80,7 @@ export default function AdminUsersPage() {
       ]);
       setOrganizations(orgs);
       setUsers(adminUsers);
+      setPage(1);
     } catch {
       setError("Не удалось загрузить пользователей.");
     } finally {
@@ -206,6 +210,11 @@ export default function AdminUsersPage() {
       setError(err?.response?.data ? JSON.stringify(err.response.data) : "Не удалось удалить пользователя.");
     }
   };
+
+  const pagedUsers = useMemo(() => {
+    const start = (page - 1) * pageSize;
+    return users.slice(start, start + pageSize);
+  }, [users, page, pageSize]);
 
   const renderModal = () => {
     if (!activeModal) return null;
@@ -346,7 +355,7 @@ export default function AdminUsersPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {users.map((user) => {
+                  {pagedUsers.map((user) => {
                     const isSelf = String(user.id) === String(me.id);
                     return (
                       <tr key={user.id}>
@@ -400,6 +409,16 @@ export default function AdminUsersPage() {
               </table>
             </div>
           ) : null}
+          <Pagination
+            total={users.length}
+            page={page}
+            pageSize={pageSize}
+            onPageChange={setPage}
+            onPageSizeChange={(size) => {
+              setPageSize(size);
+              setPage(1);
+            }}
+          />
         </div>
 
         {renderModal()}

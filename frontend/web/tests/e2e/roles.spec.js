@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { openAppAs } from "./helpers";
+import { apiLogin, createQuantityStockFixture, openAppAs } from "./helpers";
 
 test.describe("Ролевой доступ", () => {
   test("инженер видит склад и каталог только на чтение", async ({ page, request }) => {
@@ -15,13 +15,22 @@ test.describe("Ролевой доступ", () => {
     await expect(page.getByRole("heading", { name: "Новая позиция" })).toHaveCount(0);
   });
 
-  test("снабжение не может проводить складские движения", async ({ page, request }) => {
-    await openAppAs(page, request, "procurement", "/requests");
+  test("складовщик создает резерв по позиции ЗИП", async ({ page, request }) => {
+    const warehouseSession = await apiLogin(request, "warehouse");
+    const fixture = await createQuantityStockFixture(request, warehouseSession, "E2E-RESERVE");
 
-    await expect(page.getByRole("link", { name: /Движения/ })).toHaveCount(0);
-    await page.goto("/inventory");
-    await expect(page.getByRole("heading", { name: "Склад" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Резерв" })).toHaveCount(0);
+    await openAppAs(page, request, "warehouse", "/inventory");
+
+    await page.getByPlaceholder(/Найти позицию/).fill(fixture.item.sku);
+    await page.getByRole("button", { name: new RegExp(fixture.item.sku) }).click();
+    await page.getByRole("button", { name: "Зарезервировать" }).click();
+    await page.locator(".modal-panel").getByPlaceholder("Заказчик").fill("E2E заказчик резерв");
+    await page.locator(".modal-panel").getByPlaceholder("Комментарий").fill(fixture.marker);
+    await page.locator(".modal-panel").getByRole("button", { name: "Зарезервировать" }).click();
+
+    const reservationRow = page.locator(".reservation-detail-row").filter({ hasText: "E2E заказчик резерв" });
+    await expect(reservationRow).toBeVisible();
+    await expect(reservationRow.getByText(fixture.marker)).toBeVisible();
   });
 
   test("складовщик видит движения и может открыть приемку CSV", async ({ page, request }) => {

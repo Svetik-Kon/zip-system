@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
-import { createTransaction, getCatalogItems, getContracts, getEquipmentUnits, getLocations, getReservations, getTransactions } from "../api/inventory";
-import { changeRequestStatus, getRequestById } from "../api/requests";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createTransaction, getBalances, getCatalogItems, getContracts, getEquipmentUnits, getLocations, getReservations, getTransactions } from "../api/inventory";
+import { getRequestById, getRequests } from "../api/requests";
+import LookupSelect from "../components/LookupSelect";
 import Navbar from "../components/Navbar";
+import Pagination from "../components/Pagination";
 
 const OPERATIONS = [
   { value: "supplier_receipt", label: "Приемка от поставщика", needsTo: true, needsReason: true },
@@ -21,6 +23,7 @@ const CONTRACT_STATUS_LABELS = {
 };
 
 const todayIso = () => new Date().toLocaleDateString("en-CA");
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const isContractBlocked = (contract) => Boolean(contract && (
   ["expired", "closed"].includes(contract.status)
@@ -36,7 +39,7 @@ const INITIAL_FORM = {
   equipment_units: [],
   reservation: "",
   serial_numbers: "",
-  related_request_id: "",
+  related_request_number: "",
   customer_name: "",
   contract: "",
   responsible_person: "",
@@ -45,8 +48,7 @@ const INITIAL_FORM = {
   comment: "",
 };
 
-const APPROVED_FOR_CUSTOMER_ISSUE = ["awaiting_warehouse", "reserved", "ready_to_ship", "partially_fulfilled"];
-const APPROVED_FOR_LAB_TRANSFER = ["diagnostics", "awaiting_warehouse", "in_lab"];
+const REQUEST_STATUSES_BLOCKING_MOVEMENT = ["new", "in_review", "rejected", "cancelled"];
 
 const CSV_ALIASES = {
   sku: ["sku", "артикул"],
@@ -116,18 +118,24 @@ function splitSerials(value) {
 export default function MovementsPage() {
   const [items, setItems] = useState([]);
   const [locations, setLocations] = useState([]);
+  const [balances, setBalances] = useState([]);
   const [contracts, setContracts] = useState([]);
   const [equipmentUnits, setEquipmentUnits] = useState([]);
   const [reservations, setReservations] = useState([]);
   const [transactions, setTransactions] = useState([]);
   const [filters, setFilters] = useState({ search: "", operation_kind: "" });
   const [form, setForm] = useState(INITIAL_FORM);
-  const [itemSearch, setItemSearch] = useState("");
   const [serialUnitSearch, setSerialUnitSearch] = useState("");
+  const [serialLookupOpen, setSerialLookupOpen] = useState(false);
+  const [requestLookupResults, setRequestLookupResults] = useState([]);
+  const [requestLookupLoading, setRequestLookupLoading] = useState(false);
   const [receiptImportOpen, setReceiptImportOpen] = useState(false);
   const [receiptImportFile, setReceiptImportFile] = useState(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(30);
+  const serialLookupRef = useRef(null);
 
   const selectedOperation = OPERATIONS.find((operation) => operation.value === form.operation_kind) || OPERATIONS[0];
   const selectedItem = items.find((item) => item.id === form.item);
@@ -137,21 +145,117 @@ export default function MovementsPage() {
   const isSerialItem = selectedItem?.tracking_type === "serial";
   const isQuantityItem = selectedItem?.tracking_type === "quantity";
   const isSerialReceipt = isSupplierReceipt && selectedItem?.tracking_type === "serial";
+  const needsSourceStock = selectedOperation.needsFrom;
   const serialNumbers = form.serial_numbers
     .split(/\r?\n|,/)
     .map((value) => value.trim())
     .filter(Boolean);
 
-  const itemSearchResults = useMemo(() => {
-    const text = itemSearch.trim().toLowerCase();
-    if (!text) return items.slice(0, 8);
-    return items.filter((item) => [
-      item.sku,
-      item.name,
-      item.equipment_model_name,
-      item.manufacturer,
-    ].some((value) => String(value || "").toLowerCase().includes(text))).slice(0, 12);
-  }, [items, itemSearch]);
+  const itemHasSourceStock = (itemId, locationId = form.source_location) => {
+    const item = items.find((entry) => entry.id === itemId);
+    if (!needsSourceStock || !locationId || !item) return true;
+
+    if (item.tracking_type === "serial") {
+      return equipmentUnits.some((unit) => (
+        unit.item === itemId
+        && unit.location === locationId
+        && ["available", "reserved", "lab", "customer", "needs_check"].includes(unit.status)
+      ));
+    }
+
+    const hasAvailableBalance = balances.some((balance) => (
+      balance.item === itemId
+      && balance.location === locationId
+      && Number(balance.available_quantity || 0) > 0
+    ));
+    const hasActiveReservation = reservations.some((reservation) => (
+      reservation.status === "active"
+      && reservation.reservation_type === "quantity"
+      && reservation.item === itemId
+      && reservation.location === locationId
+    ));
+
+    return hasAvailableBalance || hasActiveReservation;
+  };
+
+  const sourceLocationHasItem = (locationId) => {
+    if (!needsSourceStock || !form.item) return true;
+    return itemHasSourceStock(form.item, locationId);
+  };
+
+  const sourceLocationOptions = useMemo(() => locations
+    .filter((location) => sourceLocationHasItem(location.id))
+    .map((location) => {
+      const itemBalance = form.item
+        ? balances.find((balance) => balance.item === form.item && balance.location === location.id)
+        : null;
+      const serialCount = form.item
+        ? equipmentUnits.filter((unit) => (
+          unit.item === form.item
+          && unit.location === location.id
+          && ["available", "reserved", "lab", "customer", "needs_check"].includes(unit.status)
+        )).length
+        : 0;
+
+      return {
+        value: location.id,
+        label: location.name,
+        meta: itemBalance
+          ? `доступно ${itemBalance.available_quantity}, резерв ${itemBalance.reserved_quantity}, всего ${itemBalance.on_hand_quantity}`
+          : serialCount
+            ? `${serialCount} серийных ед.`
+            : "",
+        searchText: [location.name, location.code, location.kind].filter(Boolean).join(" "),
+      };
+    }), [locations, balances, equipmentUnits, reservations, form.item, needsSourceStock]);
+
+  const destinationLocationOptions = useMemo(() => locations.map((location) => ({
+    value: location.id,
+    label: location.name,
+    searchText: [location.name, location.code, location.kind].filter(Boolean).join(" "),
+  })), [locations]);
+
+  const itemOptions = useMemo(() => items
+    .filter((item) => !needsSourceStock || !form.source_location || itemHasSourceStock(item.id, form.source_location))
+    .map((item) => {
+      const balance = form.source_location
+        ? balances.find((entry) => entry.item === item.id && entry.location === form.source_location)
+        : null;
+      const serialCount = form.source_location
+        ? equipmentUnits.filter((unit) => (
+          unit.item === item.id
+          && unit.location === form.source_location
+          && ["available", "reserved", "lab", "customer", "needs_check"].includes(unit.status)
+        )).length
+        : 0;
+
+      return {
+        value: item.id,
+        label: item.sku,
+        meta: [
+          item.name,
+          item.equipment_model_name,
+          balance ? `доступно ${balance.available_quantity}, резерв ${balance.reserved_quantity}` : "",
+          serialCount ? `${serialCount} серийных ед.` : "",
+        ].filter(Boolean).join(" / "),
+        searchText: [item.sku, item.name, item.equipment_model_name, item.manufacturer].filter(Boolean).join(" "),
+      };
+    }), [items, balances, equipmentUnits, reservations, form.source_location, needsSourceStock]);
+
+  const contractOptions = useMemo(() => contracts.map((contract) => ({
+    value: contract.id,
+    label: `${contract.customer_name} / ${contract.number}`,
+    meta: CONTRACT_STATUS_LABELS[contract.status] || contract.status,
+    disabled: !allowBlockedContracts && isContractBlocked(contract),
+    searchText: [contract.customer_name, contract.number, contract.status].filter(Boolean).join(" "),
+  })), [contracts, allowBlockedContracts]);
+
+  const requestOptions = useMemo(() => requestLookupResults.map((request) => ({
+    value: request.number,
+    label: request.number,
+    meta: [request.title, request.status].filter(Boolean).join(" / "),
+    searchText: [request.number, request.title, request.status, request.object_name].filter(Boolean).join(" "),
+  })), [requestLookupResults]);
 
   const availableUnits = useMemo(() => equipmentUnits.filter((unit) => (
     ["available", "reserved", "lab", "customer", "needs_check"].includes(unit.status)
@@ -186,6 +290,18 @@ export default function MovementsPage() {
     && (!form.source_location || reservation.location === form.source_location)
   )), [reservations, form.item, form.source_location]);
 
+  const reservationOptions = useMemo(() => quantityReservations.map((reservation) => ({
+    value: reservation.id,
+    label: reservation.customer_name || "Заказчик не указан",
+    meta: `${reservation.contract_display || reservation.contract_number || "без договора"} / ${reservation.quantity} шт.`,
+    searchText: [
+      reservation.customer_name,
+      reservation.contract_display,
+      reservation.contract_number,
+      reservation.quantity,
+    ].filter(Boolean).join(" "),
+  })), [quantityReservations]);
+
   const filteredTransactions = useMemo(() => {
     const text = filters.search.toLowerCase();
     return transactions.filter((transaction) => {
@@ -205,12 +321,22 @@ export default function MovementsPage() {
     });
   }, [transactions, filters]);
 
+  useEffect(() => {
+    setPage(1);
+  }, [filters.search, filters.operation_kind]);
+
+  const pagedTransactions = useMemo(() => {
+    const start = (page - 1) * pageSize;
+    return filteredTransactions.slice(start, start + pageSize);
+  }, [filteredTransactions, page, pageSize]);
+
   async function loadAll() {
     try {
       setError("");
-      const [itemsResult, locationsResult, contractsResult, unitsResult, reservationsResult, transactionsResult] = await Promise.all([
+      const [itemsResult, locationsResult, balancesResult, contractsResult, unitsResult, reservationsResult, transactionsResult] = await Promise.all([
         getCatalogItems(),
         getLocations(),
+        getBalances(),
         getContracts(),
         getEquipmentUnits(),
         getReservations(),
@@ -218,6 +344,7 @@ export default function MovementsPage() {
       ]);
       setItems(itemsResult);
       setLocations(locationsResult);
+      setBalances(balancesResult);
       setContracts(contractsResult);
       setEquipmentUnits(unitsResult);
       setReservations(reservationsResult);
@@ -230,6 +357,54 @@ export default function MovementsPage() {
   useEffect(() => {
     queueMicrotask(() => loadAll());
   }, []);
+
+  useEffect(() => {
+    const handleClick = (event) => {
+      if (!serialLookupRef.current?.contains(event.target)) {
+        setSerialLookupOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
+
+  useEffect(() => {
+    const query = form.related_request_number.trim();
+    if (query.length < 2 || uuidPattern.test(query)) {
+      setRequestLookupResults([]);
+      setRequestLookupLoading(false);
+      return undefined;
+    }
+
+    const timer = setTimeout(async () => {
+      try {
+        setRequestLookupLoading(true);
+        const result = await getRequests({ search: query });
+        setRequestLookupResults(result.slice(0, 8));
+      } catch {
+        setRequestLookupResults([]);
+      } finally {
+        setRequestLookupLoading(false);
+      }
+    }, 250);
+
+    return () => clearTimeout(timer);
+  }, [form.related_request_number]);
+
+  useEffect(() => {
+    if (!needsSourceStock || !form.item || !form.source_location) return;
+    if (itemHasSourceStock(form.item, form.source_location)) return;
+
+    setForm((prev) => ({
+      ...prev,
+      item: "",
+      equipment_units: [],
+      reservation: "",
+      serial_numbers: "",
+    }));
+    setSerialUnitSearch("");
+  }, [balances, equipmentUnits, reservations, form.item, form.source_location, needsSourceStock]);
 
   const handleChange = (event) => {
     const { name, value } = event.target;
@@ -251,19 +426,73 @@ export default function MovementsPage() {
     }));
   };
 
-  const selectItem = (item) => {
-    setForm((prev) => ({ ...prev, item: item.id, equipment_units: [], reservation: "", serial_numbers: "" }));
-    setSerialUnitSearch("");
-    setItemSearch(`${item.sku} - ${item.name}${item.equipment_model_name ? ` / ${item.equipment_model_name}` : ""}`);
+  const handleLookupChange = (name, value) => {
+    setForm((prev) => ({
+      ...prev,
+      [name]: value,
+      ...(name === "source_location" ? { reservation: "", equipment_units: [] } : {}),
+    }));
+    if (name === "source_location") setSerialUnitSearch("");
   };
 
-  const addSerialUnit = (unit) => {
-    setForm((prev) => ({ ...prev, equipment_units: [...prev.equipment_units, unit.id] }));
+  const selectItem = (itemId) => {
+    setForm((prev) => ({ ...prev, item: itemId, equipment_units: [], reservation: "", serial_numbers: "" }));
     setSerialUnitSearch("");
+  };
+
+  const findActiveReservationForUnit = (unit) => reservations.find((reservation) => (
+    reservation.status === "active"
+    && (
+      reservation.equipment_units?.includes(unit.id)
+      || reservation.equipment_unit_serials?.includes(unit.serial_number)
+    )
+  ));
+
+  const addSerialUnit = async (unit) => {
+    setForm((prev) => ({
+      ...prev,
+      source_location: prev.source_location || unit.location || "",
+      equipment_units: prev.equipment_units.includes(unit.id)
+        ? prev.equipment_units
+        : [...prev.equipment_units, unit.id],
+    }));
+    setSerialUnitSearch("");
+    setSerialLookupOpen(false);
+
+    const reservation = findActiveReservationForUnit(unit);
+    if (!reservation?.request_id) return;
+
+    try {
+      const request = await getRequestById(reservation.request_id);
+      setForm((prev) => ({
+        ...prev,
+        related_request_number: prev.related_request_number || request.number || "",
+        customer_name: prev.customer_name || reservation.customer_name || "",
+        contract: prev.contract || reservation.contract || "",
+      }));
+    } catch {
+      // Автоподстановка не должна блокировать сам выбор серийного номера.
+    }
   };
 
   const removeSerialUnit = (unitId) => {
     setForm((prev) => ({ ...prev, equipment_units: prev.equipment_units.filter((id) => id !== unitId) }));
+  };
+
+  const resolveRequest = async (requestNumber) => {
+    const value = requestNumber.trim();
+    if (!value) return null;
+    if (uuidPattern.test(value)) return getRequestById(value);
+
+    const foundRequests = await getRequests({ search: value });
+    const exactMatch = foundRequests.find((item) => item.number?.toLowerCase() === value.toLowerCase());
+    const selectedRequest = exactMatch || (foundRequests.length === 1 ? foundRequests[0] : null);
+
+    if (!selectedRequest) {
+      throw new Error("Заявка с таким номером не найдена. Проверь номер вида REQ-00001.");
+    }
+
+    return getRequestById(selectedRequest.id);
   };
 
   const handleSubmit = async (event) => {
@@ -271,15 +500,11 @@ export default function MovementsPage() {
     try {
       setError("");
       let relatedRequest = null;
-      if (["customer_issue", "lab_transfer"].includes(form.operation_kind)) {
-        if (!form.related_request_id.trim()) {
-          setError("Для выдачи заказчику и передачи в лабораторию нужно указать UUID согласованной заявки.");
-          return;
-        }
-        relatedRequest = await getRequestById(form.related_request_id.trim());
-        const allowedStatuses = form.operation_kind === "customer_issue" ? APPROVED_FOR_CUSTOMER_ISSUE : APPROVED_FOR_LAB_TRANSFER;
-        if (!allowedStatuses.includes(relatedRequest.status)) {
-          setError("Заявка еще не согласована для этой операции. Сначала переведите ее через согласование в подходящий рабочий статус.");
+      const relatedRequestInput = form.related_request_number.trim();
+      if (relatedRequestInput) {
+        relatedRequest = await resolveRequest(relatedRequestInput);
+        if (REQUEST_STATUSES_BLOCKING_MOVEMENT.includes(relatedRequest.status)) {
+          setError("По этой заявке нельзя оформить движение: она не согласована, отклонена или отменена.");
           return;
         }
       }
@@ -307,11 +532,19 @@ export default function MovementsPage() {
       if (form.operation_kind === "write_off" && !window.confirm("Списание нельзя отменить. Точно списать выбранное оборудование?")) {
         return;
       }
+      if (needsSourceStock && isQuantityItem && !form.reservation && form.source_location) {
+        const sourceBalance = balances.find((balance) => balance.item === form.item && balance.location === form.source_location);
+        const requestedQuantity = Number(form.quantity);
+        if (!sourceBalance || Number(sourceBalance.available_quantity || 0) < requestedQuantity) {
+          setError("На выбранной локации нет достаточного свободного остатка по этой позиции. Выбери другую локацию, позицию или активный резерв.");
+          return;
+        }
+      }
       await createTransaction({
         operation_kind: form.operation_kind,
         source_location: form.source_location || null,
         destination_location: form.destination_location || null,
-        related_request_id: form.related_request_id || null,
+        related_request_id: relatedRequest?.id || null,
         customer_name: form.customer_name,
         contract: form.contract || null,
         responsible_person: form.responsible_person,
@@ -327,17 +560,10 @@ export default function MovementsPage() {
           serial_numbers: serialNumbers,
         }],
       });
-      if (form.operation_kind === "customer_issue" && relatedRequest?.id && relatedRequest.status !== "awaiting_confirmation") {
-        await changeRequestStatus(relatedRequest.id, { status: "awaiting_confirmation", comment: "Оборудование выдано заказчику, ожидается подтверждение получения." });
-      }
-      if (form.operation_kind === "lab_transfer" && relatedRequest?.id && relatedRequest.status !== "in_lab") {
-        await changeRequestStatus(relatedRequest.id, { status: "in_lab", comment: "Оборудование передано в лабораторию." });
-      }
       setForm(INITIAL_FORM);
-      setItemSearch("");
       await loadAll();
     } catch (err) {
-      setError(err?.response?.data ? JSON.stringify(err.response.data) : "Не удалось оформить движение. Проверь остаток, серийники и обязательные поля.");
+      setError(err?.response?.data ? JSON.stringify(err.response.data) : err.message || "Не удалось оформить движение. Проверь остаток, серийники и обязательные поля.");
     }
   };
 
@@ -450,30 +676,37 @@ export default function MovementsPage() {
           <h2>Новая операция</h2>
           <form className="form movement-form" onSubmit={handleSubmit}>
             <label>Сценарий<select name="operation_kind" value={form.operation_kind} onChange={handleOperationChange}>{OPERATIONS.map((operation) => <option key={operation.value} value={operation.value}>{operation.label}</option>)}</select></label>
-            {selectedOperation.needsFrom ? <label>Откуда<select name="source_location" value={form.source_location} onChange={handleChange} required><option value="">Не выбрано</option>{locations.map((location) => <option key={location.id} value={location.id}>{location.name}</option>)}</select></label> : null}
-            {selectedOperation.needsTo ? <label>Куда<select name="destination_location" value={form.destination_location} onChange={handleChange} required><option value="">Не выбрано</option>{locations.map((location) => <option key={location.id} value={location.id}>{location.name}</option>)}</select></label> : null}
-            <label className="lookup-field">
-              Позиция
-              <input
-                value={itemSearch}
-                onChange={(event) => {
-                  setItemSearch(event.target.value);
-                  setForm((prev) => ({ ...prev, item: "", equipment_units: [], reservation: "", serial_numbers: "" }));
-                }}
-                placeholder="Начни вводить SKU, название или модель"
-                required={!form.item}
+            {selectedOperation.needsFrom ? (
+              <LookupSelect
+                label="Откуда"
+                value={form.source_location}
+                options={sourceLocationOptions}
+                onChange={(value) => handleLookupChange("source_location", value)}
+                placeholder={form.item ? "Локации с этой позицией" : "Найти локацию"}
+                emptyText={form.item ? "На локациях нет доступного остатка по выбранной позиции" : "Локации не найдены"}
+                required
               />
-              {!form.item && itemSearchResults.length ? (
-                <div className="lookup-list">
-                  {itemSearchResults.map((item) => (
-                    <button key={item.id} type="button" onClick={() => selectItem(item)}>
-                      <strong>{item.sku}</strong>
-                      <span>{item.name}{item.equipment_model_name ? ` / ${item.equipment_model_name}` : ""}</span>
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-            </label>
+            ) : null}
+            {selectedOperation.needsTo ? (
+              <LookupSelect
+                label="Куда"
+                value={form.destination_location}
+                options={destinationLocationOptions}
+                onChange={(value) => handleLookupChange("destination_location", value)}
+                placeholder="Найти локацию"
+                required
+              />
+            ) : null}
+            <LookupSelect
+              label="Позиция"
+              value={form.item}
+              options={itemOptions}
+              onChange={(value, option) => selectItem(value, option)}
+              placeholder={form.source_location ? "Позиции на выбранной локации" : "Начни вводить SKU, название или модель"}
+              emptyText={form.source_location ? "На выбранной локации нет доступных позиций" : "Позиции не найдены"}
+              required
+              limit={10}
+            />
             {isSerialReceipt ? (
               <label>
                 Серийные номера
@@ -484,27 +717,28 @@ export default function MovementsPage() {
               <label>Количество<input name="quantity" type="number" min="1" value={form.quantity} onChange={handleChange} /></label>
             ) : null}
             {canMoveQuantityReservation && isQuantityItem ? (
-              <label>
-                Резерв
-                <select name="reservation" value={form.reservation} onChange={handleChange}>
-                  <option value="">Свободный остаток</option>
-                  {quantityReservations.map((reservation) => (
-                    <option key={reservation.id} value={reservation.id}>
-                      {reservation.customer_name || "Заказчик не указан"} / {reservation.contract_display || reservation.contract_number || "без договора"} / {reservation.quantity} шт.
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <LookupSelect
+                label="Резерв"
+                value={form.reservation}
+                options={reservationOptions}
+                onChange={(value) => handleLookupChange("reservation", value)}
+                placeholder="Свободный остаток или поиск резерва"
+                emptyText="Активные резервы не найдены"
+              />
             ) : null}
             {!isSupplierReceipt && isSerialItem ? (
-              <label className="lookup-field serial-lookup">
+              <label className="lookup-field serial-lookup" ref={serialLookupRef}>
                 Серийные номера
                 <input
                   value={serialUnitSearch}
-                  onChange={(event) => setSerialUnitSearch(event.target.value)}
+                  onFocus={() => setSerialLookupOpen(true)}
+                  onChange={(event) => {
+                    setSerialUnitSearch(event.target.value);
+                    setSerialLookupOpen(true);
+                  }}
                   placeholder="Найти серийник, статус, локацию или заказчика"
                 />
-                {serialUnitSearch || serialSearchResults.length ? (
+                {serialLookupOpen ? (
                   <div className="lookup-list serial-lookup-list">
                     {serialSearchResults.map((unit) => (
                       <button key={unit.id} type="button" onClick={() => addSerialUnit(unit)}>
@@ -527,10 +761,32 @@ export default function MovementsPage() {
               </label>
             ) : null}
             {selectedOperation.needsCustomer ? <label>Заказчик<input name="customer_name" value={form.customer_name} onChange={handleChange} placeholder="Заполни, если договор не выбран" /></label> : null}
-            {selectedOperation.needsContract ? <label>Договор<select name="contract" value={form.contract} onChange={handleChange}><option value="">Не выбран</option>{contracts.map((contract) => <option key={contract.id} value={contract.id} disabled={!allowBlockedContracts && isContractBlocked(contract)}>{contract.customer_name} / {contract.number} ({CONTRACT_STATUS_LABELS[contract.status] || contract.status})</option>)}</select></label> : null}
+            {selectedOperation.needsContract ? (
+              <LookupSelect
+                label="Договор"
+                value={form.contract}
+                options={contractOptions}
+                onChange={(value) => handleLookupChange("contract", value)}
+                placeholder="Найти договор или заказчика"
+              />
+            ) : null}
             {selectedOperation.needsResponsible ? <label>Ответственный<input name="responsible_person" value={form.responsible_person} onChange={handleChange} placeholder="Например: Иванов И.И." required /></label> : null}
             {selectedOperation.needsDue ? <label>Вернуть/использовать до<input name="due_date" type="date" value={form.due_date} onChange={handleChange} /></label> : null}
-            <label>UUID заявки<input name="related_request_id" value={form.related_request_id} onChange={handleChange} /></label>
+            <LookupSelect
+              label="Номер заявки"
+              value={form.related_request_number}
+              displayValue={form.related_request_number}
+              options={requestOptions}
+              onChange={(value, option) => {
+                setForm((prev) => ({ ...prev, related_request_number: option ? value : "" }));
+              }}
+              onQueryChange={(value) => {
+                setForm((prev) => ({ ...prev, related_request_number: value }));
+              }}
+              placeholder={requestLookupLoading ? "Поиск заявки..." : "Необязательно, например REQ-00001"}
+              emptyText={form.related_request_number.trim().length < 2 ? "Введите минимум 2 символа" : "Заявки не найдены"}
+              limit={8}
+            />
             {selectedOperation.needsReason ? <label>Основание<input name="reason" value={form.reason} onChange={handleChange} required /></label> : <label>Основание<input name="reason" value={form.reason} onChange={handleChange} /></label>}
             <label>Комментарий<textarea name="comment" value={form.comment} onChange={handleChange} /></label>
             <button type="submit">Оформить</button>
@@ -548,7 +804,7 @@ export default function MovementsPage() {
             <table className="table">
               <thead><tr><th>Дата</th><th>Сценарий</th><th>Откуда</th><th>Куда</th><th>Позиции</th><th>Серийники</th><th>Заказчик</th><th>Ответственный</th><th>До</th><th>Обоснование / комментарий</th><th>Исполнитель</th></tr></thead>
               <tbody>
-                {filteredTransactions.map((transaction) => (
+                {pagedTransactions.map((transaction) => (
                   <tr key={transaction.id}>
                     <td>{new Date(transaction.created_at).toLocaleString()}</td>
                     <td>{OPERATIONS.find((operation) => operation.value === transaction.operation_kind)?.label || transaction.operation_kind}</td>
@@ -566,6 +822,16 @@ export default function MovementsPage() {
               </tbody>
             </table>
           </div>
+          <Pagination
+            total={filteredTransactions.length}
+            page={page}
+            pageSize={pageSize}
+            onPageChange={setPage}
+            onPageSizeChange={(size) => {
+              setPageSize(size);
+              setPage(1);
+            }}
+          />
           {!filteredTransactions.length ? <p>Движений не найдено.</p> : null}
         </div>
       </div>

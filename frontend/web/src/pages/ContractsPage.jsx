@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { createContract, getContracts, updateContract } from "../api/inventory";
 import { getOrganizationsRequest } from "../api/auth";
 import { getMe } from "../utils/auth";
+import LookupSelect from "../components/LookupSelect";
 import Navbar from "../components/Navbar";
+import Pagination from "../components/Pagination";
 
 const CONTRACT_STATUS_LABELS = {
   active: "Активен",
@@ -45,6 +47,8 @@ export default function ContractsPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(30);
   const canEditContracts = ["admin", "manager"].includes(me?.role);
 
   const customerOrganizations = useMemo(
@@ -56,6 +60,13 @@ export default function ContractsPage() {
     () => new Map(organizations.map((org) => [org.id, org])),
     [organizations],
   );
+
+  const customerOrganizationOptions = useMemo(() => customerOrganizations.map((org) => ({
+    value: org.id,
+    label: org.name,
+    meta: org.org_type === "integrator" ? "Интегратор" : "Заказчик",
+    searchText: [org.name, org.org_type].filter(Boolean).join(" "),
+  })), [customerOrganizations]);
 
   const loadAll = async (event) => {
     event?.preventDefault();
@@ -72,6 +83,7 @@ export default function ContractsPage() {
       ]);
       setContracts(contractResult);
       setOrganizations(organizationResult);
+      setPage(1);
     } catch (err) {
       setError(err?.response?.data ? JSON.stringify(err.response.data) : "Не удалось загрузить договоры.");
     } finally {
@@ -141,6 +153,11 @@ export default function ContractsPage() {
     }
   };
 
+  const pagedContracts = useMemo(() => {
+    const start = (page - 1) * pageSize;
+    return contracts.slice(start, start + pageSize);
+  }, [contracts, page, pageSize]);
+
   const renderModal = () => {
     if (activeModal !== "create" || !canEditContracts) return null;
 
@@ -152,10 +169,15 @@ export default function ContractsPage() {
             <button className="ghost-button" type="button" onClick={closeModal}>Закрыть</button>
           </div>
           <form className="form" onSubmit={handleSubmit}>
-            <select value={form.organization_id} onChange={(event) => handleOrganizationChange(event.target.value)}>
-              <option value="">Организация заказчика</option>
-              {customerOrganizations.map((org) => <option key={org.id} value={org.id}>{org.name}</option>)}
-            </select>
+            <LookupSelect
+              label=""
+              value={form.organization_id}
+              options={customerOrganizationOptions}
+              onChange={(value) => handleOrganizationChange(value)}
+              placeholder="Организация заказчика"
+              emptyText="Организации не найдены"
+              required
+            />
             <input placeholder="Номер договора" value={form.number} onChange={(event) => setForm((prev) => ({ ...prev, number: event.target.value }))} required />
             <label>Начало<input type="date" value={form.starts_at} onChange={(event) => setForm((prev) => ({ ...prev, starts_at: event.target.value }))} /></label>
             <label>Окончание<input type="date" value={form.ends_at} onChange={(event) => setForm((prev) => ({ ...prev, ends_at: event.target.value }))} /></label>
@@ -186,10 +208,14 @@ export default function ContractsPage() {
 
         <form className="card filters" onSubmit={loadAll}>
           <input value={filters.search} onChange={(event) => setFilters((prev) => ({ ...prev, search: event.target.value }))} placeholder="Поиск по заказчику или номеру договора" />
-          <select value={filters.organization_id} onChange={(event) => setFilters((prev) => ({ ...prev, organization_id: event.target.value }))}>
-            <option value="">Все организации</option>
-            {customerOrganizations.map((org) => <option key={org.id} value={org.id}>{org.name}</option>)}
-          </select>
+          <LookupSelect
+            label=""
+            value={filters.organization_id}
+            options={customerOrganizationOptions}
+            onChange={(value) => setFilters((prev) => ({ ...prev, organization_id: value }))}
+            placeholder="Все организации"
+            emptyText="Организации не найдены"
+          />
           <select value={filters.status} onChange={(event) => setFilters((prev) => ({ ...prev, status: event.target.value }))}>
             <option value="">Все статусы</option>
             {Object.entries(CONTRACT_STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
@@ -214,7 +240,7 @@ export default function ContractsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {contracts.map((contract) => (
+                  {pagedContracts.map((contract) => (
                     <tr key={contract.id}>
                       <td>{organizationById.get(contract.organization_id)?.name || "Без организации"}</td>
                       <td>{contract.number}</td>
@@ -232,6 +258,16 @@ export default function ContractsPage() {
               </table>
             </div>
           ) : null}
+          <Pagination
+            total={contracts.length}
+            page={page}
+            pageSize={pageSize}
+            onPageChange={setPage}
+            onPageSizeChange={(size) => {
+              setPageSize(size);
+              setPage(1);
+            }}
+          />
           {!loading && !contracts.length ? <p>Договоры не найдены.</p> : null}
         </div>
 

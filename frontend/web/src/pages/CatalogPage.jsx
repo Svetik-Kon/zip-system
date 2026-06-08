@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createCatalogItem, deleteCatalogItem, getCatalogItems } from "../api/inventory";
 import Navbar from "../components/Navbar";
+import Pagination from "../components/Pagination";
 import { getMe } from "../utils/auth";
 import { ITEM_TYPE_LABELS, getItemTypeLabel } from "../utils/dictionaries";
 
@@ -27,6 +28,8 @@ export default function CatalogPage() {
   const [filters, setFilters] = useState({ search: "", item_type: "" });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(30);
 
   useEffect(() => {
     loadItems();
@@ -41,6 +44,7 @@ export default function CatalogPage() {
       if (filters.search) params.search = filters.search;
       if (filters.item_type) params.item_type = filters.item_type;
       setItems(await getCatalogItems(params));
+      setPage(1);
     } catch {
       setError("Не удалось загрузить каталог.");
     } finally {
@@ -112,6 +116,11 @@ export default function CatalogPage() {
     }
   };
 
+  const pagedItems = useMemo(() => {
+    const start = (page - 1) * pageSize;
+    return items.slice(start, start + pageSize);
+  }, [items, page, pageSize]);
+
   return (
     <Navbar>
       <div className="page">
@@ -167,7 +176,7 @@ export default function CatalogPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {items.map((item) => (
+                  {pagedItems.map((item) => (
                     <tr key={item.id}>
                       <td>{item.sku}</td>
                       <td>{item.name}</td>
@@ -187,6 +196,16 @@ export default function CatalogPage() {
               </table>
             </div>
           ) : null}
+          <Pagination
+            total={items.length}
+            page={page}
+            pageSize={pageSize}
+            onPageChange={setPage}
+            onPageSizeChange={(size) => {
+              setPageSize(size);
+              setPage(1);
+            }}
+          />
           {!loading && !items.length ? <p>Позиции не найдены.</p> : null}
         </div>
       </div>
